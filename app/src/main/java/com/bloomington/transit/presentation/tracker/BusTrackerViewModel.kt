@@ -8,7 +8,6 @@ import com.bloomington.transit.data.local.PreferencesManager
 import com.bloomington.transit.data.model.TripUpdate
 import com.bloomington.transit.data.model.VehiclePosition
 import com.bloomington.transit.data.repository.TransitRepositoryImpl
-import com.bloomington.transit.domain.usecase.CheckArrivalProximityUseCase
 import com.bloomington.transit.domain.usecase.GetScheduleForStopUseCase
 import com.bloomington.transit.domain.usecase.GetTripUpdatesUseCase
 import com.bloomington.transit.domain.usecase.GetVehiclePositionsUseCase
@@ -25,8 +24,7 @@ data class TrackerUiState(
     val nextStops: List<ScheduleEntry> = emptyList(),
     val isLoading: Boolean = true,
     val alertEnabled: Boolean = false,
-    val alertStopId: String = "",
-    val alertDistanceM: Int = 300
+    val alertStopId: String = ""
 )
 
 class BusTrackerViewModel(
@@ -38,12 +36,18 @@ class BusTrackerViewModel(
     private val getVehicles = GetVehiclePositionsUseCase(repository)
     private val getTripUpdates = GetTripUpdatesUseCase(repository)
     private val getSchedule = GetScheduleForStopUseCase()
-    private val proximityCheck = CheckArrivalProximityUseCase()
     private val notifManager = ArrivalNotificationManager(context)
     private val prefs = PreferencesManager(context)
 
     private val _uiState = MutableStateFlow(TrackerUiState())
     val uiState: StateFlow<TrackerUiState> = _uiState
+
+    // Tracks which minute milestones (15, 10, 5) have already fired this session
+    private val alertedMilestones = mutableSetOf<Int>()
+
+    companion object {
+        private val MILESTONES = listOf(15, 10, 5)
+    }
 
     init {
         startPolling()
@@ -57,24 +61,36 @@ class BusTrackerViewModel(
                     val updates = getTripUpdates()
                     val vehicle = vehicles.find { it.vehicleId == vehicleId }
 
-                    // Compute next stops for this vehicle's current trip
                     val nextStops = if (vehicle != null) {
                         computeNextStops(vehicle, updates)
                     } else emptyList()
 
-                    // Check proximity alert
                     val alertStopId = prefs.trackedStopId.first()
-                    val alertDist = prefs.alertDistanceMeters.first()
                     if (alertStopId.isNotEmpty() && vehicle != null) {
-                        val result = proximityCheck(vehicleId, alertStopId, alertDist, vehicles)
-                        if (result != null && result.isWithinThreshold) {
-                            notifManager.notifyIfApproaching(
-                                vehicleId = vehicleId,
-                                stopName = result.stopName,
-                                routeShortName = result.routeShortName,
-                                distanceMeters = result.distanceMeters,
-                                thresholdMeters = alertDist
-                            )
+                        val etaEntry = nextStops.find { it.stopId == alertStopId }
+
+                        // Update the live tracking notification every cycle
+                        val routeShortName = GtfsStaticCache.routes[vehicle.routeId]?.shortName ?: ""
+                        val stopName = GtfsStaticCache.stops[alertStopId]?.name ?: alertStopId
+                        notifManager.updateLiveTracking(
+                            routeShortName = routeShortName,
+                            stopName = stopName,
+                            distanceMeters = null,
+                            etaLabel = etaEntry?.etaLabel ?: ""
+                        )
+
+                        // Fire milestone buzz notifications at 15, 10, and 5 minutes out
+                        if (etaEntry != null) {
+                            val arrSec = if (etaEntry.liveArrivalSec > 0)
+                                etaEntry.liveArrivalSec else etaEntry.scheduledArrivalSec
+                            val minutesAway = ((arrSec - System.currentTimeMillis() / 1000L) / 60).toInt()
+
+                            for (milestone in MILESTONES) {
+                                if (minutesAway in 0..milestone && milestone !in alertedMilestones) {
+                                    alertedMilestones.add(milestone)
+                                    notifManager.notifyMilestone(routeShortName, stopName, minutesAway)
+                                }
+                            }
                         }
                     }
 
@@ -82,8 +98,7 @@ class BusTrackerViewModel(
                         vehicle = vehicle,
                         nextStops = nextStops,
                         isLoading = false,
-                        alertStopId = alertStopId,
-                        alertDistanceM = alertDist
+                        alertStopId = alertStopId
                     )
                 } catch (_: Exception) { }
                 delay(10_000)
@@ -120,21 +135,23 @@ class BusTrackerViewModel(
     fun setAlert(stopId: String) {
         viewModelScope.launch {
             prefs.setTrackedVehicle(vehicleId, stopId)
+            alertedMilestones.clear()  // reset milestones for the new stop
             _uiState.value = _uiState.value.copy(alertEnabled = true, alertStopId = stopId)
+
+            val vehicle = _uiState.value.vehicle
+            val routeShortName = vehicle?.routeId
+                ?.let { GtfsStaticCache.routes[it]?.shortName } ?: ""
+            val stopName = GtfsStaticCache.stops[stopId]?.name ?: stopId
+            notifManager.notifyTrackingStarted(routeShortName, stopName)
         }
     }
 
     fun clearAlert() {
         viewModelScope.launch {
             prefs.clearTracking()
+            alertedMilestones.clear()
+            notifManager.cancelLiveTracking()
             _uiState.value = _uiState.value.copy(alertEnabled = false, alertStopId = "")
-        }
-    }
-
-    fun setAlertDistance(meters: Int) {
-        viewModelScope.launch {
-            prefs.setAlertDistance(meters)
-            _uiState.value = _uiState.value.copy(alertDistanceM = meters)
         }
     }
 }

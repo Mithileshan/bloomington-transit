@@ -37,7 +37,6 @@ class MainActivity : AppCompatActivity() {
 
         val topDests = setOf(
             R.id.routeMapFragment,
-            R.id.scheduleFragment,
             R.id.tripPlannerFragment,
             R.id.favoritesFragment
         )

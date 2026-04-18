@@ -1,5 +1,6 @@
 package com.bloomington.transit.presentation.planner
 
+import android.app.TimePickerDialog
 import android.content.Context
 import android.os.Bundle
 import android.text.Editable
@@ -24,6 +25,7 @@ import com.bloomington.transit.databinding.ItemTransferArrowBinding
 import com.bloomington.transit.databinding.ItemTripOptionBinding
 import com.bloomington.transit.domain.usecase.JourneyPlan
 import kotlinx.coroutines.launch
+import java.util.Calendar
 
 class TripPlannerFragment : Fragment() {
 
@@ -48,7 +50,16 @@ class TripPlannerFragment : Fragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        val tripAdapter = TripOptionAdapter()
+        val tripAdapter = TripOptionAdapter { journey ->
+            val statusMsg = viewModel.uiState.value.statusMsg
+            // Extract origin/dest names from status message "From: X  →  To: Y"
+            val parts = statusMsg.removePrefix("From: ").split("  →  To: ")
+            val originName = parts.getOrElse(0) { "" }.substringBefore("  (")
+            val destName = parts.getOrElse(1) { "" }.substringBefore("  (")
+            val saved = viewModel.saveJourney(journey, originName, destName)
+            val msg = if (saved) "Route saved!" else "Already saved"
+            android.widget.Toast.makeText(requireContext(), msg, android.widget.Toast.LENGTH_SHORT).show()
+        }
         binding.rvTripOptions.layoutManager = LinearLayoutManager(requireContext())
         binding.rvTripOptions.adapter = tripAdapter
 
@@ -59,6 +70,11 @@ class TripPlannerFragment : Fragment() {
         binding.acDest.setAdapter(destAdapter)
         binding.acOrigin.threshold = 2
         binding.acDest.threshold = 2
+
+        // Rounded dropdown background
+        val dropdownBg = androidx.core.content.ContextCompat.getDrawable(requireContext(), R.drawable.bg_dropdown)
+        binding.acOrigin.setDropDownBackgroundDrawable(dropdownBg)
+        binding.acDest.setDropDownBackgroundDrawable(dropdownBg)
 
         binding.acOrigin.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
@@ -98,6 +114,43 @@ class TripPlannerFragment : Fragment() {
             hideKeyboard()
         }
 
+        // Swap origin ↔ destination
+        binding.btnSwap.setOnClickListener {
+            val (newOrigin, newDest) = viewModel.swapOriginDest()
+            suppressOriginWatch = true
+            suppressDestWatch = true
+            binding.acOrigin.setText(newOrigin)
+            binding.acDest.setText(newDest)
+            suppressOriginWatch = false
+            suppressDestWatch = false
+        }
+
+        // Time mode toggle
+        binding.toggleTimeMode.check(R.id.btn_leave_at)
+        binding.toggleTimeMode.addOnButtonCheckedListener { _, checkedId, isChecked ->
+            if (isChecked) {
+                viewModel.setTimeMode(
+                    if (checkedId == R.id.btn_leave_at) TimeMode.LEAVE_AT else TimeMode.ARRIVE_BY
+                )
+            }
+        }
+
+        // Time picker button
+        binding.btnPickTime.setOnClickListener {
+            val cal = Calendar.getInstance()
+            TimePickerDialog(
+                requireContext(),
+                { _, hour, minute -> viewModel.setTime(hour, minute) },
+                cal.get(Calendar.HOUR_OF_DAY),
+                cal.get(Calendar.MINUTE),
+                false
+            ).show()
+        }
+        binding.btnPickTime.setOnLongClickListener {
+            viewModel.clearTime()
+            true
+        }
+
         binding.btnSearch.setOnClickListener {
             hideKeyboard()
             viewModel.search()
@@ -111,6 +164,7 @@ class TripPlannerFragment : Fragment() {
                         binding.tvNoResults.visibility = if (state.noResults) View.VISIBLE else View.GONE
                         binding.tvStatusMsg.visibility = if (state.statusMsg.isNotEmpty()) View.VISIBLE else View.GONE
                         binding.tvStatusMsg.text = state.statusMsg
+                        binding.btnPickTime.text = state.timeLabel
                         tripAdapter.submitList(state.journeys)
                     }
                 }
@@ -156,8 +210,20 @@ class TripPlannerFragment : Fragment() {
 class PlaceAdapter(context: Context, items: MutableList<String>) :
     ArrayAdapter<String>(context, R.layout.item_place_suggestion, R.id.tv_place_name, items) {
 
-    // Disable the built-in filter so ACTV doesn't reorder/hide items behind our back.
-    // The Places API already does the filtering; we show exactly what we receive.
+    override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+        val view = super.getView(position, convertView, parent)
+        val full = getItem(position) ?: ""
+        val commaIdx = full.indexOf(',')
+        val name = if (commaIdx > 0) full.substring(0, commaIdx).trim() else full
+        val address = if (commaIdx > 0) full.substring(commaIdx + 1).trim() else ""
+        view.findViewById<TextView>(R.id.tv_place_name)?.text = name
+        view.findViewById<TextView>(R.id.tv_place_address)?.apply {
+            text = address
+            visibility = if (address.isNotEmpty()) View.VISIBLE else View.GONE
+        }
+        return view
+    }
+
     override fun getFilter() = object : android.widget.Filter() {
         override fun performFiltering(c: CharSequence?) = FilterResults().apply {
             values = (0 until count).map { getItem(it) }
@@ -167,13 +233,22 @@ class PlaceAdapter(context: Context, items: MutableList<String>) :
     }
 }
 
-class TripOptionAdapter : RecyclerView.Adapter<TripOptionAdapter.VH>() {
+class TripOptionAdapter(
+    private val onSave: (JourneyPlan) -> Unit
+) : RecyclerView.Adapter<TripOptionAdapter.VH>() {
 
     private var items: List<JourneyPlan> = emptyList()
+    private val savedPositions = mutableSetOf<Int>()
 
     fun submitList(list: List<JourneyPlan>) {
         items = list
+        savedPositions.clear()
         notifyDataSetChanged()
+    }
+
+    fun markSaved(position: Int) {
+        savedPositions.add(position)
+        notifyItemChanged(position)
     }
 
     inner class VH(val binding: ItemTripOptionBinding) : RecyclerView.ViewHolder(binding.root)
@@ -194,7 +269,23 @@ class TripOptionAdapter : RecyclerView.Adapter<TripOptionAdapter.VH>() {
                 else -> "${journey.transferCount} transfers"
             }
             tvDuration.text = "${dur} min · $transferLabel"
-            tvTimeRange.text = "${journey.departureStr} → ${journey.arrivalStr}"
+
+            // Show "Leaves in X min" if departing soon
+            val nowSec = System.currentTimeMillis() / 1000L
+            val cal = java.util.Calendar.getInstance()
+            val todayMidnightSec = cal.apply {
+                set(java.util.Calendar.HOUR_OF_DAY, 0)
+                set(java.util.Calendar.MINUTE, 0)
+                set(java.util.Calendar.SECOND, 0)
+                set(java.util.Calendar.MILLISECOND, 0)
+            }.timeInMillis / 1000L
+            val nowMidSec = nowSec - todayMidnightSec
+            val depSec = journey.legs.first().departureSec
+            val minsToDepart = ((depSec - nowMidSec) / 60).toInt()
+            tvTimeRange.text = when {
+                minsToDepart in 0..9 -> "⚡ Leaves in ${minsToDepart}m  ·  ${journey.departureStr} → ${journey.arrivalStr}"
+                else -> "${journey.departureStr} → ${journey.arrivalStr}"
+            }
 
             llLegs.removeAllViews()
             journey.legs.forEachIndexed { i, leg ->
@@ -220,6 +311,18 @@ class TripOptionAdapter : RecyclerView.Adapter<TripOptionAdapter.VH>() {
                 legBinding.tvAlightInfo.text = "▼ ${leg.alightStopName}  ·  ${leg.arrivalTimeStr}"
 
                 llLegs.addView(legBinding.root)
+            }
+
+            val saved = position in savedPositions
+            btnSaveRoute.setIconResource(
+                if (saved) android.R.drawable.btn_star_big_on
+                else android.R.drawable.btn_star_big_off
+            )
+            btnSaveRoute.setOnClickListener {
+                if (position !in savedPositions) {
+                    onSave(journey)
+                    markSaved(position)
+                }
             }
         }
     }

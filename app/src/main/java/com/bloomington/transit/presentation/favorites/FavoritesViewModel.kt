@@ -58,7 +58,7 @@ class FavoritesViewModel(private val context: Context) : ViewModel() {
             val updates = try { getTripUpdates() } catch (_: Exception) { emptyList() }
             val infos = ids.mapNotNull { stopId ->
                 val stop = GtfsStaticCache.stops[stopId] ?: return@mapNotNull null
-                val arrivals = getSchedule(stopId, updates, lookAheadMinutes = 60).take(3)
+                val arrivals = getSchedule(stopId, updates).filter { !it.isPast }.take(3)
                 FavoriteStopInfo(stop = stop, nextArrivals = arrivals)
             }.sortedBy { it.stop.name }
             _uiState.value = _uiState.value.copy(

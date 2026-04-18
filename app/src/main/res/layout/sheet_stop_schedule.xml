@@ -38,7 +38,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:background="#F5F5F5"
+        android:background="?attr/colorSurfaceVariant"
         android:paddingStart="16dp"
         android:paddingEnd="16dp"
         android:paddingTop="8dp"
@@ -66,6 +66,6 @@
         android:id="@+id/rv_stop_schedule"
         android:layout_width="match_parent"
         android:layout_height="400dp"
-        android:background="#FFFFFF" />
+        android:background="?attr/colorSurface" />
 
 </LinearLayout>

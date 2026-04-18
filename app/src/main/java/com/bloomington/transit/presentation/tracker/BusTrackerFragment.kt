@@ -8,7 +8,6 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.os.Bundle
 import android.view.*
-import android.widget.SeekBar
 import androidx.core.app.ActivityCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
@@ -16,9 +15,10 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.bloomington.transit.data.local.GtfsStaticCache
 import com.bloomington.transit.databinding.FragmentBusTrackerBinding
-import com.bloomington.transit.presentation.schedule.ScheduleAdapter
+import com.bloomington.transit.domain.usecase.ScheduleEntry
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.OnMapReadyCallback
@@ -56,17 +56,7 @@ class BusTrackerFragment : Fragment(), OnMapReadyCallback {
         binding.trackerMap.getMapAsync(this)
 
         binding.rvNextStops.layoutManager = LinearLayoutManager(requireContext())
-        binding.rvNextStops.adapter = ScheduleAdapter()
-
-        binding.seekAlertDistance.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
-                val meters = (progress + 1) * 100
-                binding.tvAlertDistance.text = "${meters}m"
-                if (fromUser) viewModel.setAlertDistance(meters)
-            }
-            override fun onStartTrackingTouch(sb: SeekBar) {}
-            override fun onStopTrackingTouch(sb: SeekBar) {}
-        })
+        binding.rvNextStops.adapter = NextStopsAdapter()
 
         binding.btnClearAlert.setOnClickListener { viewModel.clearAlert() }
     }
@@ -125,12 +115,12 @@ class BusTrackerFragment : Fragment(), OnMapReadyCallback {
                         }
                     }
 
-                    (binding.rvNextStops.adapter as ScheduleAdapter).submitList(state.nextStops)
+                    (binding.rvNextStops.adapter as NextStopsAdapter).submitList(state.nextStops)
 
                     val alertText = if (state.alertStopId.isNotEmpty()) {
                         val stop = GtfsStaticCache.stops[state.alertStopId]
-                        "Alert set for ${stop?.name ?: state.alertStopId} within ${state.alertDistanceM}m"
-                    } else "Tap a stop marker to set arrival alert"
+                        "Tracking: ${stop?.name ?: state.alertStopId} — buzz at 15, 10 & 5 min"
+                    } else "Tap a stop marker to track it"
                     binding.tvAlertStatus.text = alertText
                 }
             }
@@ -216,6 +206,29 @@ class BusTrackerFragment : Fragment(), OnMapReadyCallback {
     override fun onLowMemory() {
         super.onLowMemory()
         binding.trackerMap.onLowMemory()
+    }
+}
+
+class NextStopsAdapter : RecyclerView.Adapter<NextStopsAdapter.VH>() {
+    private var items: List<ScheduleEntry> = emptyList()
+    fun submitList(list: List<ScheduleEntry>) { items = list; notifyDataSetChanged() }
+
+    inner class VH(val tv: android.widget.TextView) : RecyclerView.ViewHolder(tv)
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
+        val tv = android.widget.TextView(parent.context).apply {
+            layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            setPadding(32, 16, 32, 16)
+            textSize = 13f
+        }
+        return VH(tv)
+    }
+
+    override fun getItemCount() = items.size
+
+    override fun onBindViewHolder(holder: VH, position: Int) {
+        val e = items[position]
+        holder.tv.text = "${e.etaLabel}  •  Route ${e.routeShortName}  ${e.headsign}"
     }
 }
 

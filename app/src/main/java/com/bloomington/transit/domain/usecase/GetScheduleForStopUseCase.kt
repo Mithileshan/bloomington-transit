@@ -17,27 +17,29 @@ data class ScheduleEntry(
     val liveArrivalSec: Long,
     val etaLabel: String,
     val delayMin: Int,
-    val tripId: String
+    val tripId: String,
+    val isPast: Boolean = false
 )
 
 class GetScheduleForStopUseCase {
 
+    /**
+     * Returns the full-day schedule for [stopId].
+     * If [filterRouteId] is non-empty, only that route's trips are included.
+     * Past departures are included with [ScheduleEntry.isPast] = true.
+     */
     operator fun invoke(
         stopId: String,
         tripUpdates: List<TripUpdate>,
-        lookAheadMinutes: Int = 180
+        filterRouteId: String = ""
     ): List<ScheduleEntry> {
         val nowSec = System.currentTimeMillis() / 1000L
-        val cutoffSec = nowSec + lookAheadMinutes * 60L
 
         val stopTimes: List<GtfsStopTime> =
             GtfsStaticCache.stopTimesByStop[stopId] ?: return emptyList()
 
         val todayServiced = activeTodayServiceIds()
-        // Fall back to all services if none run today (e.g. weekends with no service)
-        val activeServices = todayServiced.ifEmpty {
-            GtfsStaticCache.calendars.keys.toSet()
-        }
+        val activeServices = todayServiced.ifEmpty { GtfsStaticCache.calendars.keys.toSet() }
 
         val realtimeLookup = mutableMapOf<String, StopTimeUpdate>()
         for (tu in tripUpdates) {
@@ -45,15 +47,15 @@ class GetScheduleForStopUseCase {
             if (stu != null) realtimeLookup[tu.tripId] = stu
         }
 
-        val entries = stopTimes.mapNotNull { st ->
+        return stopTimes.mapNotNull { st ->
             val trip = GtfsStaticCache.trips[st.tripId] ?: return@mapNotNull null
             if (!activeServices.contains(trip.serviceId)) return@mapNotNull null
+            if (filterRouteId.isNotEmpty() && trip.routeId != filterRouteId) return@mapNotNull null
 
             val stu = realtimeLookup[st.tripId]
             val scheduledSec = ArrivalTimeCalculator.stopTimeToUnixSec(st.arrivalTime)
             val liveSec = ArrivalTimeCalculator.resolvedArrivalSec(st, stu)
-
-            if (liveSec < nowSec || liveSec > cutoffSec) return@mapNotNull null
+            val isPast = liveSec < nowSec
 
             val route = GtfsStaticCache.routes[trip.routeId]
             val stop = GtfsStaticCache.stops[stopId]
@@ -67,35 +69,12 @@ class GetScheduleForStopUseCase {
                 headsign = trip.headsign,
                 scheduledArrivalSec = scheduledSec,
                 liveArrivalSec = liveSec,
-                etaLabel = ArrivalTimeCalculator.formatEta(liveSec),
+                etaLabel = ArrivalTimeCalculator.formatTime(liveSec),
                 delayMin = delayMin,
-                tripId = st.tripId
+                tripId = st.tripId,
+                isPast = isPast
             )
         }.sortedBy { it.liveArrivalSec }
-
-        // If still empty (all departures passed for today), show full day schedule
-        if (entries.isEmpty()) {
-            return stopTimes.mapNotNull { st ->
-                val trip = GtfsStaticCache.trips[st.tripId] ?: return@mapNotNull null
-                val route = GtfsStaticCache.routes[trip.routeId]
-                val stop = GtfsStaticCache.stops[stopId]
-                val scheduledSec = ArrivalTimeCalculator.stopTimeToUnixSec(st.arrivalTime)
-                ScheduleEntry(
-                    stopId = stopId,
-                    stopName = stop?.name ?: stopId,
-                    routeId = trip.routeId,
-                    routeShortName = route?.shortName ?: trip.routeId,
-                    headsign = trip.headsign,
-                    scheduledArrivalSec = scheduledSec,
-                    liveArrivalSec = scheduledSec,
-                    etaLabel = ArrivalTimeCalculator.formatEta(scheduledSec),
-                    delayMin = 0,
-                    tripId = st.tripId
-                )
-            }.sortedBy { it.scheduledArrivalSec }.take(20)
-        }
-
-        return entries
     }
 
     private fun activeTodayServiceIds(): Set<String> {

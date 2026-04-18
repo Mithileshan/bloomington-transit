@@ -25,13 +25,7 @@
             app:argType="string" />
     </fragment>
 
-    <fragment
-        android:id="@+id/scheduleFragment"
-        android:name="com.bloomington.transit.presentation.schedule.ScheduleFragment"
-        android:label="Schedule"
-        tools:layout="@layout/fragment_schedule" />
-
-    <fragment
+<fragment
         android:id="@+id/tripPlannerFragment"
         android:name="com.bloomington.transit.presentation.planner.TripPlannerFragment"
         android:label="Plan Trip"

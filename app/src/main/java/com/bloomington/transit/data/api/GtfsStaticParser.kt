@@ -60,12 +60,18 @@ class GtfsStaticParser(private val context: Context) {
         GtfsStaticCache.stops = parseStops(File(dir, "stops.txt"))
         GtfsStaticCache.calendars = parseCalendars(File(dir, "calendar.txt"))
         GtfsStaticCache.shapes = parseShapes(File(dir, "shapes.txt"))
-        val trips = parseTrips(File(dir, "trips.txt"))
+        val validRouteIds = GtfsStaticCache.routes.keys
+        val allTrips = parseTrips(File(dir, "trips.txt"))
+        // Filter trips to only those belonging to valid (non-excluded) routes
+        val trips = allTrips.filter { (_, trip) -> trip.routeId in validRouteIds }
         GtfsStaticCache.trips = trips
         GtfsStaticCache.tripsByRoute = trips.values
             .groupBy { it.routeId }
             .mapValues { e -> e.value.map { it.tripId } }
-        val stopTimes = parseStopTimes(File(dir, "stop_times.txt"))
+        val validTripIds = trips.keys
+        val allStopTimes = parseStopTimes(File(dir, "stop_times.txt"))
+        // Filter stop times to only those belonging to valid trips
+        val stopTimes = allStopTimes.filter { it.tripId in validTripIds }
         GtfsStaticCache.stopTimesByTrip = stopTimes.groupBy { it.tripId }
             .mapValues { e -> e.value.sortedBy { it.stopSequence } }
         GtfsStaticCache.stopTimesByStop = stopTimes.groupBy { it.stopId }
@@ -83,13 +89,15 @@ class GtfsStaticParser(private val context: Context) {
             val idxLong = headers.indexOf("route_long_name")
             val idxColor = headers.indexOf("route_color")
             val idxText = headers.indexOf("route_text_color")
+            val excludedShortNames = setOf("12", "13", "14")
             reader.lineSequence().filter { it.isNotBlank() }.forEach { line ->
                 val cols = parseCsvLine(line)
                 val id = cols.getOrElse(idxId) { "" }
-                if (id.isNotEmpty()) {
+                val shortName = cols.getOrElse(idxShort) { "" }
+                if (id.isNotEmpty() && shortName !in excludedShortNames) {
                     result[id] = GtfsRoute(
                         routeId = id,
-                        shortName = cols.getOrElse(idxShort) { "" },
+                        shortName = shortName,
                         longName = cols.getOrElse(idxLong) { "" },
                         color = cols.getOrElse(idxColor) { "1565C0" }.ifEmpty { "1565C0" },
                         textColor = cols.getOrElse(idxText) { "FFFFFF" }.ifEmpty { "FFFFFF" }
