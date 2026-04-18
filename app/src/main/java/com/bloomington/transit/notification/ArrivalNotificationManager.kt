@@ -71,7 +71,8 @@ class ArrivalNotificationManager(private val context: Context) {
         routeShortName: String,
         stopName: String,
         distanceMeters: Float?,
-        etaLabel: String
+        etaLabel: String,
+        progressPercent: Int? = null
     ) {
         val distText = when {
             distanceMeters == null          -> ""
@@ -81,14 +82,20 @@ class ArrivalNotificationManager(private val context: Context) {
         }
         val etaText = if (etaLabel.isNotEmpty()) "Arrives $etaLabel" else "Tracking live…"
 
-        val notif = NotificationCompat.Builder(context, LIVE_CHANNEL_ID)
+        val builder = NotificationCompat.Builder(context, LIVE_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_bus)
             .setContentTitle("Route $routeShortName$distText")
             .setContentText("$etaText · to $stopName")
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setOngoing(true)          // pinned — not swipeable
             .setOnlyAlertOnce(true)    // no sound/vibration on updates
-            .build()
+        if (progressPercent != null) {
+            builder.setProgress(100, progressPercent.coerceIn(0, 100), false)
+        } else {
+            builder.setProgress(0, 0, false)
+        }
+
+        val notif = builder.build()
         manager.notify(NOTIF_ID_LIVE_TRACKING, notif)
     }
 

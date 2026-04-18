@@ -118,14 +118,76 @@ class BusTrackerFragment : Fragment(), OnMapReadyCallback {
 
                     (binding.rvNextStops.adapter as NextStopsAdapter).submitList(state.nextStops)
 
-                    val alertText = if (state.alertStopId.isNotEmpty()) {
-                        val stop = GtfsStaticCache.stops[state.alertStopId]
-                        "Tracking: ${stop?.name ?: state.alertStopId} — buzz at 15, 10 & 5 min"
-                    } else "Tap a stop marker to track it"
-                    binding.tvAlertStatus.text = alertText
+                    updateArrivalProgress(state)
                 }
             }
         }
+    }
+
+    /**
+     * Shows/updates the arrival progress card when a stop is being tracked.
+     * Progress: 0 % at 15+ min away → 100 % at arrival.
+     * Bar colour: green → amber → red as bus gets close.
+     */
+    private fun updateArrivalProgress(state: com.bloomington.transit.presentation.tracker.TrackerUiState) {
+        val stopId = state.alertStopId
+        if (stopId.isEmpty()) {
+            binding.cardArrivalProgress.visibility = android.view.View.GONE
+            binding.tvAlertStatus.visibility = android.view.View.VISIBLE
+            binding.tvAlertStatus.text = "Tap a stop marker to set an arrival alert"
+            return
+        }
+
+        binding.cardArrivalProgress.visibility = android.view.View.VISIBLE
+        binding.tvAlertStatus.visibility = android.view.View.GONE
+
+        // Stop name
+        val stop = com.bloomington.transit.data.local.GtfsStaticCache.stops[stopId]
+        binding.tvTrackedStop.text = stop?.name ?: stopId
+
+        // ETA entry for the tracked stop
+        val eta = state.nextStops.find { it.stopId == stopId }
+        val nowSec = System.currentTimeMillis() / 1000L
+        val arrSec = eta?.let {
+            if (it.liveArrivalSec > 0) it.liveArrivalSec else it.scheduledArrivalSec
+        } ?: 0L
+
+        val minutesAway = if (arrSec > nowSec) ((arrSec - nowSec) / 60L).toInt() else 0
+
+        // ETA badge text + colour
+        val (badgeText, badgeColor) = when {
+            arrSec <= 0      -> Pair("-- min", "#1565C0")
+            minutesAway <= 0 -> Pair("Arriving", "#4CAF50")
+            minutesAway <= 5 -> Pair("$minutesAway min", "#F44336")
+            minutesAway <= 10 -> Pair("$minutesAway min", "#FF9800")
+            else              -> Pair("$minutesAway min", "#1565C0")
+        }
+        binding.tvEtaBadge.text = badgeText
+        binding.tvEtaBadge.backgroundTintList =
+            android.content.res.ColorStateList.valueOf(android.graphics.Color.parseColor(badgeColor))
+
+        // Progress: 0 % at ≥15 min, 100 % at arrival
+        val WINDOW_MIN = 15
+        val progress = if (arrSec <= 0) 0
+        else ((WINDOW_MIN - minutesAway.coerceAtMost(WINDOW_MIN)).toFloat() / WINDOW_MIN * 100).toInt()
+            .coerceIn(0, 100)
+
+        // Animate progress bar
+        val animator = android.animation.ObjectAnimator.ofInt(
+            binding.progressArrival, "progress",
+            binding.progressArrival.progress, progress
+        ).apply { duration = 600L }
+        animator.start()
+
+        // Bar colour reflects urgency
+        val barColor = when {
+            minutesAway <= 5  -> "#F44336"
+            minutesAway <= 10 -> "#FF9800"
+            else               -> "#1565C0"
+        }
+        (binding.progressArrival.progressDrawable as? android.graphics.drawable.LayerDrawable)
+            ?.findDrawableByLayerId(android.R.id.progress)
+            ?.setTint(android.graphics.Color.parseColor(barColor))
     }
 
     private fun drawRouteShape(tripId: String, colorInt: Int) {

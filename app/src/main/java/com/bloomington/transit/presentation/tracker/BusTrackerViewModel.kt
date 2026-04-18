@@ -46,6 +46,7 @@ class BusTrackerViewModel(
 
     // Tracks which minute milestones (15, 10, 5) have already fired this session
     private val alertedMilestones = mutableSetOf<Int>()
+    private var initialStopsAway: Int? = null
 
     companion object {
         private val MILESTONES = listOf(15, 10, 5)
@@ -74,11 +75,25 @@ class BusTrackerViewModel(
                         // Update the live tracking notification every cycle
                         val routeShortName = GtfsStaticCache.routes[vehicle.routeId]?.shortName ?: ""
                         val stopName = GtfsStaticCache.stops[alertStopId]?.name ?: alertStopId
+                        val targetStopSequence = GtfsStaticCache.stopTimesByTrip[vehicle.tripId]
+                            ?.find { it.stopId == alertStopId }
+                            ?.stopSequence
+                        val stopsAway = targetStopSequence?.let {
+                            (it - vehicle.currentStopSequence).coerceAtLeast(0)
+                        }
+                        if (stopsAway != null) {
+                            initialStopsAway = maxOf(initialStopsAway ?: stopsAway, stopsAway, 1)
+                        }
                         notifManager.updateLiveTracking(
                             routeShortName = routeShortName,
                             stopName = stopName,
                             distanceMeters = null,
-                            etaLabel = etaEntry?.etaLabel ?: ""
+                            etaLabel = etaEntry?.etaLabel ?: "",
+                            progressPercent = if (initialStopsAway != null && stopsAway != null) {
+                                val totalStops = initialStopsAway ?: 1
+                                val completedStops = (totalStops - stopsAway).coerceIn(0, totalStops)
+                                ((completedStops * 100f) / totalStops).toInt()
+                            } else null
                         )
 
                         // Fire milestone buzz notifications at 15, 10, and 5 minutes out
@@ -142,6 +157,7 @@ class BusTrackerViewModel(
         viewModelScope.launch {
             prefs.setTrackedVehicle(vehicleId, stopId)
             alertedMilestones.clear()
+            initialStopsAway = null
             _uiState.value = _uiState.value.copy(alertEnabled = true, alertStopId = stopId)
 
             val vehicle = _uiState.value.vehicle
@@ -158,6 +174,7 @@ class BusTrackerViewModel(
         viewModelScope.launch {
             prefs.clearTracking()
             alertedMilestones.clear()
+            initialStopsAway = null
             notifManager.cancelLiveTracking()
             BusTrackingService.stop(context)
             _uiState.value = _uiState.value.copy(alertEnabled = false, alertStopId = "")

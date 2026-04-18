@@ -87,6 +87,7 @@ class BusTrackingService : Service() {
 
     private suspend fun runVehicleMode(prefs: PreferencesManager, notifManager: ArrivalNotificationManager) {
         val alertedMilestones = mutableSetOf<Int>()
+        var initialStopsAway: Int? = null
         while (scope.isActive) {
             try {
                 val vehicleId   = prefs.trackedVehicleId.first()
@@ -106,13 +107,20 @@ class BusTrackingService : Service() {
                         .find { it.stopId == alertStopId }
 
                     if (alertStopTime != null) {
+                        val stopsAway = computeStopsAway(vehicle.currentStopSequence, alertStopTime.stopSequence)
+                        initialStopsAway = trackInitialStopsAway(initialStopsAway, stopsAway)
                         val stu         = updates.find { it.tripId == vehicle.tripId }
                             ?.stopTimeUpdates?.find { it.stopId == alertStopId }
                         val arrSec      = ArrivalTimeCalculator.resolvedArrivalSec(alertStopTime, stu)
                         val minutesAway = ((arrSec - System.currentTimeMillis() / 1000L) / 60L).toInt()
 
-                        notifManager.updateLiveTracking(routeShortName, stopName, null,
-                            ArrivalTimeCalculator.formatEta(arrSec))
+                        notifManager.updateLiveTracking(
+                            routeShortName = routeShortName,
+                            stopName = stopName,
+                            distanceMeters = null,
+                            etaLabel = ArrivalTimeCalculator.formatEta(arrSec),
+                            progressPercent = calculateProgressPercent(initialStopsAway, stopsAway)
+                        )
 
                         for (milestone in VEHICLE_MILESTONES) {
                             if (minutesAway in 0..milestone && milestone !in alertedMilestones) {
@@ -126,8 +134,12 @@ class BusTrackingService : Service() {
                             stopSelf(); return
                         }
                     } else {
-                        notifManager.updateLiveTracking(routeShortName,
-                            GtfsStaticCache.stops[alertStopId]?.name ?: alertStopId, null, "")
+                        notifManager.updateLiveTracking(
+                            routeShortName = routeShortName,
+                            stopName = GtfsStaticCache.stops[alertStopId]?.name ?: alertStopId,
+                            distanceMeters = null,
+                            etaLabel = ""
+                        )
                     }
                 }
             } catch (e: Exception) { Log.e(TAG, "Vehicle poll error: ${e.message}") }
@@ -143,6 +155,8 @@ class BusTrackingService : Service() {
     private suspend fun runJourneyMode(prefs: PreferencesManager, notifManager: ArrivalNotificationManager) {
         var lastNotifiedMinute = Int.MAX_VALUE
         val destArrivalMilestones = mutableSetOf<Int>()
+        var initialBoardingStopsAway: Int? = null
+        var initialDestStopsAway: Int? = null
 
         while (scope.isActive) {
             try {
@@ -153,7 +167,9 @@ class BusTrackingService : Service() {
                     stopSelf(); return
                 }
 
+                val vehicles       = getVehicles()
                 val updates        = getTripUpdates()
+                val vehicle        = vehicles.find { it.tripId == tripId }
                 val tripStops      = GtfsStaticCache.stopTimesByTrip[tripId] ?: emptyList()
                 val boardingSt     = tripStops.find { it.stopId == boardingStopId }
                 val destSt         = tripStops.find { it.stopId == destStopId }
@@ -170,12 +186,24 @@ class BusTrackingService : Service() {
 
                     Log.d(TAG, "Journey mode: $minutesToBoard min to board at $boardingName")
 
-                    // Update foreground notification
-                    val fgText = when {
-                        minutesToBoard > 0 -> "Bus in $minutesToBoard min at $boardingName"
-                        else               -> "You're on the bus → $destName"
+                    if (minutesToBoard >= 0) {
+                        val remainingStops = vehicle?.let {
+                            computeStopsAway(it.currentStopSequence, boardingSt.stopSequence)
+                        }
+                        if (remainingStops != null) {
+                            initialBoardingStopsAway =
+                                trackInitialStopsAway(initialBoardingStopsAway, remainingStops)
+                        }
+                        notifManager.updateLiveTracking(
+                            routeShortName = routeShortName,
+                            stopName = boardingName,
+                            distanceMeters = null,
+                            etaLabel = "in $minutesToBoard min",
+                            progressPercent = remainingStops?.let {
+                                calculateProgressPercent(initialBoardingStopsAway, it)
+                            }
+                        )
                     }
-                    notifManager.updateLiveTracking(routeShortName, boardingName, null, fgText)
 
                     // Phase 1: Bus approaching boarding stop — every 2 min countdown
                     if (minutesToBoard in 0..30) {
@@ -193,6 +221,21 @@ class BusTrackingService : Service() {
                         val destStu    = tripUpdate?.stopTimeUpdates?.find { it.stopId == destStopId }
                         val destSec    = ArrivalTimeCalculator.resolvedArrivalSec(destSt, destStu)
                         val minToDest  = ((destSec - System.currentTimeMillis() / 1000L) / 60L).toInt()
+                        val destStopsAway = vehicle?.let {
+                            computeStopsAway(it.currentStopSequence, destSt.stopSequence)
+                        }
+                        if (destStopsAway != null) {
+                            initialDestStopsAway = trackInitialStopsAway(initialDestStopsAway, destStopsAway)
+                        }
+                        notifManager.updateLiveTracking(
+                            routeShortName = routeShortName,
+                            stopName = destName,
+                            distanceMeters = null,
+                            etaLabel = ArrivalTimeCalculator.formatEta(destSec),
+                            progressPercent = destStopsAway?.let {
+                                calculateProgressPercent(initialDestStopsAway, it)
+                            }
+                        )
 
                         for (milestone in listOf(5, 2, 0)) {
                             if (minToDest <= milestone && milestone !in destArrivalMilestones) {
@@ -213,6 +256,21 @@ class BusTrackingService : Service() {
             } catch (e: Exception) { Log.e(TAG, "Journey poll error: ${e.message}") }
             delay(30_000)
         }
+    }
+
+    private fun computeStopsAway(vehicleStopSequence: Int, targetStopSequence: Int): Int {
+        return (targetStopSequence - vehicleStopSequence).coerceAtLeast(0)
+    }
+
+    private fun trackInitialStopsAway(initialStopsAway: Int?, currentStopsAway: Int): Int {
+        return maxOf(initialStopsAway ?: currentStopsAway, currentStopsAway, 1)
+    }
+
+    private fun calculateProgressPercent(initialStopsAway: Int?, currentStopsAway: Int): Int? {
+        val totalStops = initialStopsAway ?: return null
+        if (totalStops <= 0) return null
+        val completedStops = (totalStops - currentStopsAway).coerceIn(0, totalStops)
+        return ((completedStops * 100f) / totalStops).toInt()
     }
 
     override fun onDestroy() {
