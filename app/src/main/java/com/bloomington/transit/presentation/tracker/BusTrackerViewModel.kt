@@ -1,6 +1,7 @@
 package com.bloomington.transit.presentation.tracker
 
 import android.content.Context
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.bloomington.transit.data.local.GtfsStaticCache
@@ -84,10 +85,12 @@ class BusTrackerViewModel(
                             val arrSec = if (etaEntry.liveArrivalSec > 0)
                                 etaEntry.liveArrivalSec else etaEntry.scheduledArrivalSec
                             val minutesAway = ((arrSec - System.currentTimeMillis() / 1000L) / 60).toInt()
+                            Log.d("BusTracker", "Alert stop ETA: ${minutesAway}min, alerted=$alertedMilestones")
 
                             for (milestone in MILESTONES) {
                                 if (minutesAway in 0..milestone && milestone !in alertedMilestones) {
                                     alertedMilestones.add(milestone)
+                                    Log.d("BusTracker", "Firing milestone notification: ${minutesAway}min")
                                     notifManager.notifyMilestone(routeShortName, stopName, minutesAway)
                                 }
                             }
@@ -100,8 +103,10 @@ class BusTrackerViewModel(
                         isLoading = false,
                         alertStopId = alertStopId
                     )
-                } catch (_: Exception) { }
-                delay(10_000)
+                } catch (e: Exception) {
+                    Log.e("BusTracker", "Poll error: ${e.message}")
+                }
+                delay(5_000)
             }
         }
     }
@@ -135,13 +140,14 @@ class BusTrackerViewModel(
     fun setAlert(stopId: String) {
         viewModelScope.launch {
             prefs.setTrackedVehicle(vehicleId, stopId)
-            alertedMilestones.clear()  // reset milestones for the new stop
+            alertedMilestones.clear()
             _uiState.value = _uiState.value.copy(alertEnabled = true, alertStopId = stopId)
 
             val vehicle = _uiState.value.vehicle
             val routeShortName = vehicle?.routeId
-                ?.let { GtfsStaticCache.routes[it]?.shortName } ?: ""
+                ?.let { GtfsStaticCache.routes[it]?.shortName } ?: vehicle?.routeId ?: ""
             val stopName = GtfsStaticCache.stops[stopId]?.name ?: stopId
+            Log.d("BusTracker", "Tracking started: route=$routeShortName stop=$stopName")
             notifManager.notifyTrackingStarted(routeShortName, stopName)
         }
     }

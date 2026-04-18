@@ -16,9 +16,10 @@ class TransitRepositoryImpl : TransitRepository {
         withContext(Dispatchers.IO) {
             try {
                 val bytes = service.getVehiclePositions().bytes()
+                Log.d("TransitRepo", "Vehicle positions response: ${bytes.size} bytes")
                 GtfsRtParser.parseVehiclePositions(bytes)
             } catch (e: Exception) {
-                Log.e("TransitRepo", "Vehicle positions fetch failed", e)
+                Log.e("TransitRepo", "Vehicle positions fetch failed: ${e.message}", e)
                 emptyList()
             }
         }

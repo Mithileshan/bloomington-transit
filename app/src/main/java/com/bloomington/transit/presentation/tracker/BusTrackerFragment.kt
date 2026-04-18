@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.RectF
 import android.os.Bundle
 import android.view.*
 import androidx.core.app.ActivityCompat
@@ -157,15 +158,23 @@ class BusTrackerFragment : Fragment(), OnMapReadyCallback {
     }
 
     private fun createBusDot(color: Int): BitmapDescriptor {
-        val size = 40
-        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val density = resources.displayMetrics.density
+        val w = (72 * density).toInt()
+        val h = (44 * density).toInt()
+        val r = 6 * density
+        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color; style = Paint.Style.FILL }
-        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 4f
-        }
-        canvas.drawCircle(size / 2f, size / 2f, size / 2f - 4, fill)
-        canvas.drawCircle(size / 2f, size / 2f, size / 2f - 4, stroke)
+
+        val bodyRect = RectF(0f, 0f, w - 2*density, h - 2*density)
+        canvas.drawRoundRect(bodyRect, r, r,
+            Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color; style = Paint.Style.FILL })
+        canvas.drawRect(6*density, 5*density, w - 8*density, h * 0.52f,
+            Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = Color.argb(220,255,255,255); style = Paint.Style.FILL })
+        val wheelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = Color.parseColor("#212121"); style = Paint.Style.FILL }
+        canvas.drawCircle(14*density, h - 2*density - 5*density, 5*density, wheelPaint)
+        canvas.drawCircle(w - 16*density, h - 2*density - 5*density, 5*density, wheelPaint)
+        canvas.drawRoundRect(bodyRect, r, r,
+            Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 1.5f*density })
         return BitmapDescriptorFactory.fromBitmap(bitmap)
     }
 
