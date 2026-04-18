@@ -1,18 +1,20 @@
 package com.bloomington.transit.presentation.map
 
 import android.Manifest
+import android.animation.ValueAnimator
 import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.RectF
 import android.graphics.Typeface
-import android.location.Location
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.LinearInterpolator
 import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.TextView
@@ -70,6 +72,9 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
 
     private var routeItems: List<RouteItem> = emptyList()
     private var spinnerReady = false
+    private val markerAnimators  = mutableMapOf<String, ValueAnimator>()
+    private val lastEmittedPos   = mutableMapOf<String, LatLng>()   // detect real position changes
+
 
     private val locationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -86,7 +91,20 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
         _binding = FragmentRouteMapBinding.inflate(inflater, container, false)
         prefs = PreferencesManager(requireContext())
+        // Map is full-screen — hide the action bar so we have more canvas
+        (activity as? androidx.appcompat.app.AppCompatActivity)?.supportActionBar?.hide()
         return binding.root
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        // Restore the action bar for other screens
+        (activity as? androidx.appcompat.app.AppCompatActivity)?.supportActionBar?.show()
+        markerAnimators.values.forEach { it.cancel() }
+        markerAnimators.clear()
+        lastEmittedPos.clear()
+        binding.map.onDestroy()
+        _binding = null
     }
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
@@ -226,16 +244,30 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
                     viewModel.uiState.collect { state ->
                         val routeId = viewModel.selectedRouteId.value
                         updateBusMarkers(state.vehicles, routeId)
-                        binding.tvStatus.text = when {
-                            state.isLoading -> "Loading real-time data…"
-                            state.error != null -> "${state.error} • Retrying in 10s"
+                        when {
+                            state.isLoading -> {
+                                binding.tvStatus.text = "Loading…"
+                                binding.viewLiveDot.setBackgroundResource(R.drawable.dot_live)
+                                binding.viewLiveDot.alpha = 0.4f
+                            }
+                            state.error != null -> {
+                                binding.tvStatus.text = "Retrying…"
+                                binding.viewLiveDot.setBackgroundColor(android.graphics.Color.parseColor("#F44336"))
+                                binding.viewLiveDot.alpha = 1f
+                            }
                             else -> {
-                                val busCount = if (routeId.isEmpty()) state.vehicles.size
+                                val totalVehicles = state.vehicles.size
+                                val busCount = if (routeId.isEmpty()) totalVehicles
                                               else state.vehicles.count { it.routeId == routeId }
                                 val time = if (state.lastUpdatedMs > 0)
-                                    SimpleDateFormat("h:mm:ss a", Locale.getDefault()).format(Date(state.lastUpdatedMs))
+                                    SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(state.lastUpdatedMs))
                                 else "—"
-                                "$busCount buses active  •  Updated $time"
+                                binding.tvStatus.text = if (busCount == 0)
+                                    "No buses active • $time"
+                                else
+                                    "$busCount bus${if (busCount != 1) "es" else ""} live • $time"
+                                binding.viewLiveDot.setBackgroundResource(R.drawable.dot_live)
+                                binding.viewLiveDot.alpha = 1f
                             }
                         }
                     }
@@ -343,8 +375,9 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
         busMarkerMap.keys.filter { it !in currentIds }.forEach { id -> busMarkerMap.remove(id)?.remove() }
 
         for (vehicle in filtered) {
-            val pos = LatLng(vehicle.lat, vehicle.lon)
+            val newPos = LatLng(vehicle.lat, vehicle.lon)
             val route = GtfsStaticCache.routes[vehicle.routeId]
+            val routeShortName = route?.shortName ?: vehicle.routeId.take(4)
             val colorInt = runCatching { Color.parseColor("#${route?.color ?: "1565C0"}") }
                 .getOrDefault(Color.parseColor("#1565C0"))
 
@@ -352,17 +385,53 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
             if (existing == null) {
                 val marker = map.addMarker(
                     MarkerOptions()
-                        .position(pos)
-                        .title("Route ${route?.shortName ?: vehicle.routeId}")
+                        .position(newPos)
+                        .title("Route $routeShortName")
                         .snippet("Bus ${vehicle.label.ifEmpty { vehicle.vehicleId }} — tap to track")
-                        .icon(createBusDot(colorInt))
+                        .icon(createBusIcon(routeShortName, colorInt))
+                        .anchor(0.5f, 0.5f)
+                        .rotation(vehicle.bearing)
+                        .flat(true)
+                        .zIndex(10f)
                 )
                 marker?.tag = vehicle.vehicleId
-                if (marker != null) busMarkerMap[vehicle.vehicleId] = marker
+                if (marker != null) {
+                    busMarkerMap[vehicle.vehicleId] = marker
+                    lastEmittedPos[vehicle.vehicleId] = newPos
+                }
             } else {
-                existing.position = pos
+                val prev = lastEmittedPos[vehicle.vehicleId]
+                val moved = prev == null
+                    || Math.abs(prev.latitude  - newPos.latitude)  > 1e-6
+                    || Math.abs(prev.longitude - newPos.longitude) > 1e-6
+                if (moved) {
+                    lastEmittedPos[vehicle.vehicleId] = newPos
+                    animateMarker(vehicle.vehicleId, existing, newPos, vehicle.bearing)
+                }
             }
         }
+    }
+
+    /** Animate marker to next interpolated position. 450 ms < 500 ms tick = seamless. */
+    private fun animateMarker(id: String, marker: Marker, toPos: LatLng, toBearing: Float) {
+        markerAnimators[id]?.cancel()
+        val fromPos     = marker.position
+        val fromBearing = marker.rotation
+        val dBearing    = ((toBearing - fromBearing + 540f) % 360f) - 180f
+        val anim = ValueAnimator.ofFloat(0f, 1f).apply {
+            duration = 450L
+            interpolator = LinearInterpolator()
+            addUpdateListener { va ->
+                val t = va.animatedFraction
+                marker.position = LatLng(
+                    fromPos.latitude  + (toPos.latitude  - fromPos.latitude)  * t,
+                    fromPos.longitude + (toPos.longitude - fromPos.longitude) * t
+                )
+                marker.rotation = fromBearing + dBearing * t
+            }
+        }
+        markerAnimators[id] = anim
+        anim.start()
     }
 
     private fun drawFavoriteStars(favStopIds: Set<String>) {
@@ -407,14 +476,97 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
         sheet.show(parentFragmentManager, "stop_info")
     }
 
-    private fun createBusDot(color: Int): BitmapDescriptor {
-        val size = 40
-        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+    /**
+     * Top-down 3D bus icon — portrait orientation, "front" faces up (north).
+     * The marker uses .flat(true) + .rotation(bearing) so it rotates with road direction.
+     */
+    private fun createBusIcon(routeShortName: String, color: Int): BitmapDescriptor {
+        val dp = resources.displayMetrics.density
+        // Canvas size: narrow width, taller height (bus is longer than wide, viewed from above)
+        val W = (26 * dp).toInt()
+        val H = (44 * dp).toInt()
+
+        val bitmap = Bitmap.createBitmap(W, H, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color; style = Paint.Style.FILL }
-        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 4f }
-        canvas.drawCircle(size / 2f, size / 2f, size / 2f - 4, fill)
-        canvas.drawCircle(size / 2f, size / 2f, size / 2f - 4, stroke)
+
+        // --- Derive darker shade for 3-D side panels ---
+        val hsv = FloatArray(3)
+        Color.colorToHSV(color, hsv)
+        hsv[2] = (hsv[2] * 0.65f).coerceIn(0f, 1f)
+        val darkColor = Color.HSVToColor(hsv)
+
+        // --- 3-D shadow offset (bottom-right) ---
+        val shadow = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = Color.argb(50, 0, 0, 0)
+        }
+        canvas.drawRoundRect(
+            RectF(2*dp, 2*dp, W.toFloat(), H.toFloat()),
+            5*dp, 5*dp, shadow
+        )
+
+        val body = RectF(0f, 0f, W - 2*dp, H - 2*dp)
+
+        // --- Right side-panel (darker) — 3-D depth illusion ---
+        val sidePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = darkColor }
+        canvas.drawRoundRect(
+            RectF(W - 4*dp, 4*dp, W - 2*dp, H - 4*dp),
+            2*dp, 2*dp, sidePaint
+        )
+
+        // --- Main top face (route color) ---
+        val bodyPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color }
+        canvas.drawRoundRect(body, 5*dp, 5*dp, bodyPaint)
+
+        // --- Windshield (front, top ~22 % of body) ---
+        val windshieldPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = Color.argb(200, 180, 225, 255)   // light blue tint
+        }
+        canvas.drawRoundRect(
+            RectF(3*dp, 3*dp, W - 5*dp, H * 0.22f),
+            3*dp, 3*dp, windshieldPaint
+        )
+
+        // --- Rear window (bottom ~10 %) ---
+        canvas.drawRoundRect(
+            RectF(4*dp, H * 0.87f, W - 6*dp, H - 5*dp),
+            2*dp, 2*dp, windshieldPaint
+        )
+
+        // --- Side windows (two small strips left & right) ---
+        val sideWinPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = Color.argb(150, 180, 225, 255)
+        }
+        // Left side windows
+        canvas.drawRect(0f, H * 0.28f, 2*dp, H * 0.55f, sideWinPaint)
+        canvas.drawRect(0f, H * 0.60f, 2*dp, H * 0.82f, sideWinPaint)
+        // Right side windows
+        canvas.drawRect(W - 4*dp, H * 0.28f, W - 2*dp, H * 0.55f, sideWinPaint)
+        canvas.drawRect(W - 4*dp, H * 0.60f, W - 2*dp, H * 0.82f, sideWinPaint)
+
+        // --- Route number badge in center ---
+        val badgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = Color.argb(180, 0, 0, 0)
+        }
+        val badgeRect = RectF(3*dp, H * 0.33f, W - 5*dp, H * 0.72f)
+        canvas.drawRoundRect(badgeRect, 3*dp, 3*dp, badgePaint)
+
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = Color.WHITE
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.DEFAULT_BOLD
+            textSize = 9 * dp
+        }
+        val textY = badgeRect.centerY() - (textPaint.descent() + textPaint.ascent()) / 2f
+        canvas.drawText(routeShortName, badgeRect.centerX(), textY, textPaint)
+
+        // --- White outline ---
+        val outline = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            this.color = Color.WHITE
+            style = Paint.Style.STROKE
+            strokeWidth = 1.2f * dp
+        }
+        canvas.drawRoundRect(body, 5*dp, 5*dp, outline)
+
         return BitmapDescriptorFactory.fromBitmap(bitmap)
     }
 
@@ -459,12 +611,6 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         _binding?.map?.onSaveInstanceState(outState)
-    }
-
-    override fun onDestroyView() {
-        super.onDestroyView()
-        binding.map.onDestroy()
-        _binding = null
     }
 
     override fun onLowMemory() { super.onLowMemory(); binding.map.onLowMemory() }
