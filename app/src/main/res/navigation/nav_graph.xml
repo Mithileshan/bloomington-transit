@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<navigation xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/nav_graph"
+    app:startDestination="@id/routeMapFragment">
+
+    <fragment
+        android:id="@+id/routeMapFragment"
+        android:name="com.bloomington.transit.presentation.map.RouteMapFragment"
+        android:label="Map"
+        tools:layout="@layout/fragment_route_map">
+        <action
+            android:id="@+id/action_routeMapFragment_to_busTrackerFragment"
+            app:destination="@id/busTrackerFragment" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/busTrackerFragment"
+        android:name="com.bloomington.transit.presentation.tracker.BusTrackerFragment"
+        android:label="Track Bus"
+        tools:layout="@layout/fragment_bus_tracker">
+        <argument
+            android:name="vehicleId"
+            app:argType="string" />
+    </fragment>
+
+    <fragment
+        android:id="@+id/scheduleFragment"
+        android:name="com.bloomington.transit.presentation.schedule.ScheduleFragment"
+        android:label="Schedule"
+        tools:layout="@layout/fragment_schedule" />
+
+    <fragment
+        android:id="@+id/tripPlannerFragment"
+        android:name="com.bloomington.transit.presentation.planner.TripPlannerFragment"
+        android:label="Plan Trip"
+        tools:layout="@layout/fragment_trip_planner" />
+
+    <fragment
+        android:id="@+id/favoritesFragment"
+        android:name="com.bloomington.transit.presentation.favorites.FavoritesFragment"
+        android:label="Favorites"
+        tools:layout="@layout/fragment_favorites" />
+
+</navigation>
