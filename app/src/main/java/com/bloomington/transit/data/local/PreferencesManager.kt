@@ -17,6 +17,7 @@ class PreferencesManager(private val context: Context) {
         private val KEY_ALERT_DISTANCE_M = intPreferencesKey("alert_distance_m")
         private val KEY_TRACKED_VEHICLE = stringPreferencesKey("tracked_vehicle_id")
         private val KEY_TRACKED_STOP = stringPreferencesKey("tracked_stop_id")
+        private val KEY_TRACKED_TRIP = stringPreferencesKey("tracked_trip_id")
         private val KEY_VISIBLE_ROUTES = stringSetPreferencesKey("visible_routes")
         private val KEY_MAP_LAT = floatPreferencesKey("map_lat")
         private val KEY_MAP_LON = floatPreferencesKey("map_lon")
@@ -34,6 +35,9 @@ class PreferencesManager(private val context: Context) {
 
     val trackedStopId: Flow<String> = context.dataStore.data
         .map { it[KEY_TRACKED_STOP] ?: "" }
+
+    val trackedTripId: Flow<String> = context.dataStore.data
+        .map { it[KEY_TRACKED_TRIP] ?: "" }
 
     // null  = never configured (first install) → show only Route 6 by default
     // empty = user explicitly deselected all
@@ -57,6 +61,14 @@ class PreferencesManager(private val context: Context) {
 
     suspend fun setAlertDistance(meters: Int) {
         context.dataStore.edit { it[KEY_ALERT_DISTANCE_M] = meters }
+    }
+
+    suspend fun setTrackedTrip(tripId: String, stopId: String) {
+        context.dataStore.edit {
+            it[KEY_TRACKED_TRIP] = tripId
+            it[KEY_TRACKED_STOP] = stopId
+            it[KEY_TRACKED_VEHICLE] = ""
+        }
     }
 
     suspend fun setVisibleRoutes(routeIds: Set<String>) {

@@ -54,6 +54,7 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
     private val routePolylines = mutableMapOf<String, Polyline>()
     private val stopCircles = mutableListOf<Pair<Circle, com.bloomington.transit.data.model.GtfsStop>>()
     private val busMarkerMap = mutableMapOf<String, Marker>()
+    private val favoriteMarkers = mutableMapOf<String, Marker>()
 
     private val bloomington = LatLng(39.1653, -86.5264)
 
@@ -155,15 +156,25 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
         }
     }
 
-    private fun drawStopMarkers() {
+    private fun drawStopMarkers(visibleIds: Set<String>? = viewModel.visibleRouteIds.value) {
         val map = googleMap ?: return
         stopCircles.forEach { (c, _) -> c.remove() }
         stopCircles.clear()
 
+        val effectiveIds: Set<String> = when (visibleIds) {
+            null -> GtfsStaticCache.routes.values.filter { it.shortName == "6" }.map { it.routeId }.toSet()
+            else -> visibleIds
+        }
+
         for (stop in GtfsStaticCache.stops.values) {
-            val routeId = GtfsStaticCache.stopTimesByStop[stop.stopId]
-                ?.firstOrNull()?.let { st -> GtfsStaticCache.trips[st.tripId]?.routeId }
-            val fillColor = routeId?.let { rid ->
+            // Only show stops served by at least one visible route
+            val stopRoutes = GtfsStaticCache.stopTimesByStop[stop.stopId]
+                ?.mapNotNull { st -> GtfsStaticCache.trips[st.tripId]?.routeId }
+                ?.toSet() ?: emptySet()
+            if (effectiveIds.isNotEmpty() && stopRoutes.none { it in effectiveIds }) continue
+
+            val primaryRouteId = stopRoutes.firstOrNull { it in effectiveIds } ?: stopRoutes.firstOrNull()
+            val fillColor = primaryRouteId?.let { rid ->
                 GtfsStaticCache.routes[rid]?.color?.let { hex ->
                     runCatching { Color.parseColor("#$hex") }.getOrNull()
                 }
@@ -195,17 +206,78 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
                 launch {
                     viewModel.visibleRouteIds.collect { visibleIds ->
                         drawAllRouteShapes(visibleIds)
+                        drawStopMarkers(visibleIds)
                         updateBusMarkers(viewModel.uiState.value.vehicles, visibleIds ?: emptySet())
                     }
                 }
                 launch {
                     GtfsStaticCache.loaded.filter { it }.collect {
-                        drawAllRouteShapes(viewModel.visibleRouteIds.value)
-                        drawStopMarkers()
+                        val visible = viewModel.visibleRouteIds.value
+                        drawAllRouteShapes(visible)
+                        drawStopMarkers(visible)
+                        drawFavoriteStars(viewModel.favoriteStopIds.value)
+                    }
+                }
+                launch {
+                    viewModel.favoriteStopIds.collect { favIds ->
+                        drawFavoriteStars(favIds)
                     }
                 }
             }
         }
+    }
+
+    private fun drawFavoriteStars(favStopIds: Set<String>) {
+        val map = googleMap ?: return
+        // Remove markers for stops no longer in favorites
+        favoriteMarkers.keys.filter { it !in favStopIds }.forEach { id ->
+            favoriteMarkers.remove(id)?.remove()
+        }
+        // Add markers for newly favorited stops
+        for (stopId in favStopIds) {
+            if (favoriteMarkers.containsKey(stopId)) continue
+            val stop = GtfsStaticCache.stops[stopId] ?: continue
+            val marker = map.addMarker(
+                MarkerOptions()
+                    .position(LatLng(stop.lat, stop.lon))
+                    .title("⭐ ${stop.name}")
+                    .snippet("Favorite stop")
+                    .icon(createStarIcon())
+            )
+            if (marker != null) favoriteMarkers[stopId] = marker
+        }
+    }
+
+    private fun createStarIcon(): BitmapDescriptor {
+        val size = 96
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#FFA000")
+            style = Paint.Style.FILL
+        }
+        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.parseColor("#BF360C")
+            style = Paint.Style.STROKE
+            strokeWidth = 5f
+        }
+        val path = android.graphics.Path()
+        val cx = size / 2f
+        val cy = size / 2f
+        val outerR = size / 2f - 6
+        val innerR = outerR * 0.42f
+        val points = 5
+        for (i in 0 until points * 2) {
+            val angle = Math.PI / points * i - Math.PI / 2
+            val r = if (i % 2 == 0) outerR else innerR
+            val x = cx + r * Math.cos(angle).toFloat()
+            val y = cy + r * Math.sin(angle).toFloat()
+            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
+        }
+        path.close()
+        canvas.drawPath(path, paint)
+        canvas.drawPath(path, stroke)
+        return BitmapDescriptorFactory.fromBitmap(bitmap)
     }
 
     private fun updateBusMarkers(vehicles: List<VehiclePosition>, visibleIds: Set<String>) {
@@ -264,17 +336,12 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
     }
 
     private fun showStopInfoDialog(stop: com.bloomington.transit.data.model.GtfsStop) {
-        AlertDialog.Builder(requireContext())
-            .setTitle(stop.name)
-            .setMessage("Stop ID: ${stop.stopId}")
-            .setPositiveButton("Add to Favorites") { _, _ ->
-                viewLifecycleOwner.lifecycleScope.launch {
-                    prefs.addFavoriteStop(stop.stopId)
-                    Toast.makeText(requireContext(), "${stop.name} added to favorites", Toast.LENGTH_SHORT).show()
-                }
-            }
-            .setNegativeButton("Close", null)
-            .show()
+        val sheet = StopInfoSheet.newInstance(stop.stopId)
+        sheet.onViewSchedule = {
+            StopScheduleSheet.newInstance(stop.stopId)
+                .show(parentFragmentManager, "schedule")
+        }
+        sheet.show(parentFragmentManager, "stop_info")
     }
 
     private fun flyToMyLocation() {

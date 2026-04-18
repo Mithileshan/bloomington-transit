@@ -3,37 +3,124 @@
     xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="8dp">
+    android:orientation="vertical">
 
-    <TextView
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="Route"
-        android:textStyle="bold" />
-
-    <Spinner
-        android:id="@+id/spinner_route"
+    <!-- Location search bar -->
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content" />
-
-    <TextView
-        android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="Stop"
-        android:textStyle="bold"
-        android:layout_marginTop="8dp" />
+        android:orientation="horizontal"
+        android:background="#B8651D"
+        android:padding="10dp"
+        android:gravity="center_vertical">
 
-    <Spinner
-        android:id="@+id/spinner_stop"
+        <AutoCompleteTextView
+            android:id="@+id/ac_location_search"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:layout_marginEnd="8dp"
+            android:hint="Find nearest stop — type a location"
+            android:textColorHint="#AAFFFFFF"
+            android:textColor="#FFFFFF"
+            android:background="@null"
+            android:textSize="14sp"
+            android:imeOptions="actionSearch"
+            android:inputType="text"
+            android:completionThreshold="2"
+            />
+
+        <ImageButton
+            android:id="@+id/btn_clear_location"
+            android:layout_width="36dp"
+            android:layout_height="36dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:src="@android:drawable/ic_menu_close_clear_cancel"
+            android:tint="#FFFFFF"
+            android:contentDescription="Clear"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <!-- Walking result card -->
+    <androidx.cardview.widget.CardView
+        android:id="@+id/card_walk_result"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content" />
+        android:layout_height="wrap_content"
+        android:layout_marginStart="8dp"
+        android:layout_marginEnd="8dp"
+        android:layout_marginTop="6dp"
+        android:visibility="gone"
+        app:cardElevation="4dp"
+        app:cardCornerRadius="8dp"
+        xmlns:app="http://schemas.android.com/apk/res-auto">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <TextView
+                android:id="@+id/tv_walk_stop_name"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textStyle="bold"
+                android:textSize="15sp" />
+
+            <TextView
+                android:id="@+id/tv_walk_info"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="13sp"
+                android:layout_marginTop="4dp"
+                android:textColor="#555555" />
+
+            <TextView
+                android:id="@+id/tv_walk_routes"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:textSize="12sp"
+                android:layout_marginTop="2dp"
+                android:textColor="#B8651D" />
+        </LinearLayout>
+    </androidx.cardview.widget.CardView>
+
+    <!-- Route + Stop spinners -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="8dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Route"
+            android:textStyle="bold" />
+
+        <Spinner
+            android:id="@+id/spinner_route"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Stop"
+            android:textStyle="bold"
+            android:layout_marginTop="8dp" />
+
+        <Spinner
+            android:id="@+id/spinner_stop"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content" />
+    </LinearLayout>
 
     <TextView
         android:id="@+id/tv_empty"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="No upcoming departures in the next 90 minutes."
+        android:text="No upcoming departures in the next 3 hours."
         android:gravity="center"
         android:padding="24dp"
         android:visibility="gone" />
@@ -43,6 +130,6 @@
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1"
-        android:layout_marginTop="8dp" />
+        android:layout_marginTop="4dp" />
 
 </LinearLayout>

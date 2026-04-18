@@ -31,6 +31,34 @@ class ArrivalNotificationManager(private val context: Context) {
         manager.createNotificationChannel(channel)
     }
 
+    fun notifyTripApproaching(
+        tripId: String,
+        stopName: String,
+        routeShortName: String,
+        stopsAway: Int,
+        minutesAway: Int
+    ) {
+        val key = "trip_${tripId}_${stopName}"
+        if (alerted.contains(key)) return
+        alerted.add(key)
+
+        val stopsText = if (stopsAway == 1) "1 stop" else "$stopsAway stops"
+        val timeText = if (minutesAway <= 1) "less than 1 min" else "~$minutesAway min"
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_bus)
+            .setContentTitle("🚌 Route $routeShortName is $stopsText away!")
+            .setContentText("Arriving at $stopName in $timeText")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(true)
+            .build()
+
+        manager.notify(NOTIF_ID + 1, notification)
+    }
+
+    fun resetTripAlert(tripId: String, stopName: String) {
+        alerted.remove("trip_${tripId}_${stopName}")
+    }
+
     fun notifyIfApproaching(
         vehicleId: String,
         stopName: String,
