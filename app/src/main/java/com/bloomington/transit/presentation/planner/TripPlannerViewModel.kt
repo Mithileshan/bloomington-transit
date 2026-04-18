@@ -203,32 +203,59 @@ class TripPlannerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun autocomplete(text: String): List<PlacePrediction> = withContext(Dispatchers.IO) {
-        try {
-            val q = URLEncoder.encode(text, "UTF-8")
-            val url = "https://maps.googleapis.com/maps/api/place/autocomplete/json" +
-                    "?input=$q&location=39.1653,-86.5264&radius=8000&strictbounds=true&components=country:us" +
-                    "&key=${BuildConfig.MAPS_API_KEY}"
-            val body = http.newCall(Request.Builder().url(url).build()).execute()
-                .body?.string() ?: return@withContext emptyList()
-            val predictions = JSONObject(body).getJSONArray("predictions")
-            (0 until predictions.length()).map { i ->
-                val p = predictions.getJSONObject(i)
-                PlacePrediction(p.getString("description"), p.getString("place_id"))
-            }
-        } catch (_: Exception) { emptyList() }
+    private suspend fun autocomplete(text: String): List<PlacePrediction> {
+        // 1. Always search GTFS stops locally — instant and always works
+        val gtfsMatches = withContext(Dispatchers.Default) {
+            GtfsStaticCache.stops.values
+                .filter { it.name.contains(text, ignoreCase = true) }
+                .sortedBy { it.name }
+                .take(6)
+                .map { stop ->
+                    val label = if (stop.code.isNotEmpty()) "${stop.name} (Stop ${stop.code})"
+                                else stop.name
+                    PlacePrediction(label, "gtfs_stop:${stop.stopId}")
+                }
+        }
+
+        // 2. Also query Places API for addresses/POIs — silently skip if unavailable
+        val placesResults = withContext(Dispatchers.IO) {
+            try {
+                val q = URLEncoder.encode(text, "UTF-8")
+                val url = "https://maps.googleapis.com/maps/api/place/autocomplete/json" +
+                        "?input=$q&location=39.1653,-86.5264&radius=20000&components=country:us" +
+                        "&key=${BuildConfig.MAPS_API_KEY}"
+                val body = http.newCall(Request.Builder().url(url).build()).execute()
+                    .body?.string() ?: return@withContext emptyList()
+                val arr = JSONObject(body).optJSONArray("predictions") ?: return@withContext emptyList()
+                (0 until arr.length()).map { i ->
+                    val p = arr.getJSONObject(i)
+                    PlacePrediction(p.getString("description"), p.getString("place_id"))
+                }
+            } catch (_: Exception) { emptyList<PlacePrediction>() }
+        }
+
+        // GTFS stops first (most relevant for transit), then Places results
+        return gtfsMatches + placesResults
     }
 
-    private suspend fun getPlaceCoords(placeId: String): Pair<Double, Double>? = withContext(Dispatchers.IO) {
-        try {
-            val url = "https://maps.googleapis.com/maps/api/place/details/json" +
-                    "?place_id=$placeId&fields=geometry&key=${BuildConfig.MAPS_API_KEY}"
-            val body = http.newCall(Request.Builder().url(url).build()).execute()
-                .body?.string() ?: return@withContext null
-            val loc = JSONObject(body).getJSONObject("result")
-                .getJSONObject("geometry").getJSONObject("location")
-            Pair(loc.getDouble("lat"), loc.getDouble("lng"))
-        } catch (_: Exception) { null }
+    private suspend fun getPlaceCoords(placeId: String): Pair<Double, Double>? {
+        // Handle GTFS stop IDs directly — no network call needed
+        if (placeId.startsWith("gtfs_stop:")) {
+            val stopId = placeId.removePrefix("gtfs_stop:")
+            val stop = GtfsStaticCache.stops[stopId] ?: return null
+            return Pair(stop.lat, stop.lon)
+        }
+        return withContext(Dispatchers.IO) {
+            try {
+                val url = "https://maps.googleapis.com/maps/api/place/details/json" +
+                        "?place_id=$placeId&fields=geometry&key=${BuildConfig.MAPS_API_KEY}"
+                val body = http.newCall(Request.Builder().url(url).build()).execute()
+                    .body?.string() ?: return@withContext null
+                val loc = JSONObject(body).getJSONObject("result")
+                    .getJSONObject("geometry").getJSONObject("location")
+                Pair(loc.getDouble("lat"), loc.getDouble("lng"))
+            } catch (_: Exception) { null }
+        }
     }
 
     private fun nearestStops(lat: Double, lon: Double, count: Int): List<GtfsStop> {

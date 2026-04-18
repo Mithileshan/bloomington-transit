@@ -15,10 +15,14 @@ class ArrivalNotificationManager(private val context: Context) {
         private const val LIVE_CHANNEL_ID      = "bt_live_tracking"
         private const val LIVE_CHANNEL_NAME    = "Live Bus Tracking"
 
-        private const val NOTIF_ID_ARRIVAL       = 1001
-        private const val NOTIF_ID_TRIP_ARRIVAL  = 1002
-        private const val NOTIF_ID_TRACKING_START = 1003
-        private const val NOTIF_ID_LIVE_TRACKING  = 1004
+        private const val NOTIF_ID_ARRIVAL          = 1001
+        private const val NOTIF_ID_TRIP_ARRIVAL    = 1002
+        private const val NOTIF_ID_TRACKING_START  = 1003
+        private const val NOTIF_ID_LIVE_TRACKING   = 1004
+        private const val NOTIF_ID_JOURNEY_UPDATE  = 1005
+
+        private const val JOURNEY_CHANNEL_ID   = "bt_journey_updates"
+        private const val JOURNEY_CHANNEL_NAME = "Journey Countdown"
     }
 
     private val manager =
@@ -39,6 +43,13 @@ class ArrivalNotificationManager(private val context: Context) {
                 NotificationManager.IMPORTANCE_LOW).apply {
                 description = "Live updates while tracking a bus"
                 setShowBadge(false)
+            }
+        )
+        manager.createNotificationChannel(
+            NotificationChannel(JOURNEY_CHANNEL_ID, JOURNEY_CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Countdown updates every 2 minutes for your journey"
+                enableVibration(true)
             }
         )
     }
@@ -128,6 +139,33 @@ class ArrivalNotificationManager(private val context: Context) {
 
         manager.notify(NOTIF_ID_TRIP_ARRIVAL, notification)
     }
+
+    /** Fires every 2 min as the bus approaches the boarding stop for a favourite journey. */
+    fun notifyJourneyCountdown(
+        routeShortName: String,
+        boardingStopName: String,
+        destName: String,
+        minutesAway: Int
+    ) {
+        val (emoji, urgency) = when {
+            minutesAway <= 2  -> "🔴" to "Due NOW"
+            minutesAway <= 5  -> "🟠" to "$minutesAway min away"
+            minutesAway <= 10 -> "🟡" to "$minutesAway min away"
+            else              -> "🟢" to "$minutesAway min away"
+        }
+        val notif = NotificationCompat.Builder(context, JOURNEY_CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_bus)
+            .setContentTitle("$emoji Route $routeShortName — $urgency")
+            .setContentText("Board at $boardingStopName → $destName")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setAutoCancel(false)
+            .setOnlyAlertOnce(minutesAway > 5) // vibrate/sound only at close milestones
+            .setVibrate(if (minutesAway <= 5) longArrayOf(0, 250, 100, 250) else null)
+            .build()
+        manager.notify(NOTIF_ID_JOURNEY_UPDATE, notif)
+    }
+
+    fun cancelJourneyUpdate() { manager.cancel(NOTIF_ID_JOURNEY_UPDATE) }
 
     fun resetTripAlert(tripId: String, stopName: String) {
         alerted.remove("trip_${tripId}_${stopName}")

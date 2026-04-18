@@ -14,6 +14,7 @@ import com.bloomington.transit.domain.usecase.GetTripUpdatesUseCase
 import com.bloomington.transit.domain.usecase.GetVehiclePositionsUseCase
 import com.bloomington.transit.domain.usecase.ScheduleEntry
 import com.bloomington.transit.notification.ArrivalNotificationManager
+import com.bloomington.transit.tracking.BusTrackingService
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -114,7 +115,7 @@ class BusTrackerViewModel(
     private fun computeNextStops(vehicle: VehiclePosition, updates: List<TripUpdate>): List<ScheduleEntry> {
         val tripStops = GtfsStaticCache.stopTimesByTrip[vehicle.tripId] ?: return emptyList()
         val afterSeq = vehicle.currentStopSequence
-        val upcoming = tripStops.filter { it.stopSequence >= afterSeq }.take(5)
+        val upcoming = tripStops.filter { it.stopSequence >= afterSeq }.take(10)
         return upcoming.mapNotNull { st ->
             val tripUpdate = updates.find { it.tripId == vehicle.tripId }
             val stu = tripUpdate?.stopTimeUpdates?.find { it.stopId == st.stopId }
@@ -149,6 +150,7 @@ class BusTrackerViewModel(
             val stopName = GtfsStaticCache.stops[stopId]?.name ?: stopId
             Log.d("BusTracker", "Tracking started: route=$routeShortName stop=$stopName")
             notifManager.notifyTrackingStarted(routeShortName, stopName)
+            BusTrackingService.start(context)
         }
     }
 
@@ -157,6 +159,7 @@ class BusTrackerViewModel(
             prefs.clearTracking()
             alertedMilestones.clear()
             notifManager.cancelLiveTracking()
+            BusTrackingService.stop(context)
             _uiState.value = _uiState.value.copy(alertEnabled = false, alertStopId = "")
         }
     }

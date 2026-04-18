@@ -13,11 +13,13 @@ import com.bloomington.transit.domain.usecase.ScheduleEntry
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 data class FavoriteStopInfo(
     val stop: GtfsStop,
+    val nickname: String,
     val nextArrivals: List<ScheduleEntry>
 )
 
@@ -38,32 +40,39 @@ class FavoritesViewModel(private val context: Context) : ViewModel() {
     val uiState: StateFlow<FavoritesUiState> = _uiState
 
     init {
-        // Immediately refresh whenever the favorites set changes in DataStore
         viewModelScope.launch {
-            prefs.favoriteStopIds.collect { ids ->
-                refreshWithIds(ids)
+            combine(prefs.favoriteStopIds, prefs.favoriteNicknames) { ids, nicknames ->
+                ids to nicknames
+            }.collect { (ids, nicknames) ->
+                refreshWithIds(ids, nicknames)
             }
         }
-        // Periodic live ETA updates
         viewModelScope.launch {
             while (true) {
                 delay(10_000)
-                refreshWithIds(prefs.favoriteStopIds.first())
+                val ids       = prefs.favoriteStopIds.first()
+                val nicknames = prefs.favoriteNicknames.first()
+                refreshWithIds(ids, nicknames)
             }
         }
     }
 
-    private suspend fun refreshWithIds(ids: Set<String>) {
+    private suspend fun refreshWithIds(ids: Set<String>, nicknames: Map<String, String>) {
         try {
             val updates = try { getTripUpdates() } catch (_: Exception) { emptyList() }
             val infos = ids.mapNotNull { stopId ->
                 val stop = GtfsStaticCache.stops[stopId] ?: return@mapNotNull null
                 val arrivals = getSchedule(stopId, updates).filter { !it.isPast }.take(3)
-                FavoriteStopInfo(stop = stop, nextArrivals = arrivals)
-            }.sortedBy { it.stop.name }
+                FavoriteStopInfo(
+                    stop      = stop,
+                    nickname  = nicknames[stopId] ?: "",
+                    nextArrivals = arrivals
+                )
+            }.sortedBy { (it.nickname.ifEmpty { it.stop.name }).lowercase() }
+
             _uiState.value = _uiState.value.copy(
                 favorites = infos,
-                allStops = GtfsStaticCache.stops.values.sortedBy { it.name },
+                allStops  = GtfsStaticCache.stops.values.sortedBy { it.name },
                 isLoading = false
             )
         } catch (_: Exception) {
@@ -77,5 +86,9 @@ class FavoritesViewModel(private val context: Context) : ViewModel() {
 
     fun removeFavorite(stopId: String) {
         viewModelScope.launch { prefs.removeFavoriteStop(stopId) }
+    }
+
+    fun setNickname(stopId: String, nickname: String) {
+        viewModelScope.launch { prefs.setFavoriteNickname(stopId, nickname) }
     }
 }

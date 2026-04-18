@@ -103,6 +103,11 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
         markerAnimators.values.forEach { it.cancel() }
         markerAnimators.clear()
         lastEmittedPos.clear()
+        busMarkerMap.clear()
+        routePolylines.clear()
+        stopCircles.clear()
+        favoriteMarkers.clear()
+        googleMap = null
         binding.map.onDestroy()
         _binding = null
     }
@@ -172,7 +177,7 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
         val routes = GtfsStaticCache.routes.values
             .sortedWith(compareBy { it.shortName.padStart(4, '0') })
             .map { route ->
-                val color = runCatching { Color.parseColor("#${route.color}") }.getOrDefault(defaultColor)
+                val color = routeColor(route.routeId, route.color)
                 RouteItem(route.routeId, "Route ${route.shortName} — ${route.longName}", color)
             }
         routeItems = listOf(allItem) + routes
@@ -309,8 +314,7 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
             if (selectedRouteId.isNotEmpty() && routeId != selectedRouteId) continue
 
             val route = GtfsStaticCache.routes[routeId]
-            val colorInt = runCatching { Color.parseColor("#${route?.color ?: "1565C0"}") }
-                .getOrDefault(Color.parseColor("#1565C0"))
+            val colorInt = routeColor(routeId, route?.color)
 
             val polyline = map.addPolyline(
                 PolylineOptions()
@@ -338,8 +342,8 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
             stopIds.mapNotNull { GtfsStaticCache.stops[it] }
         }
 
-        val routeColor = GtfsStaticCache.routes[selectedRouteId]?.color
-            ?.let { runCatching { Color.parseColor("#$it") }.getOrNull() }
+        val routeColor = GtfsStaticCache.routes[selectedRouteId]
+            ?.let { routeColor(selectedRouteId, it.color) }
             ?: Color.parseColor("#FF8F00")
 
         for (stop in stopsToShow) {
@@ -348,9 +352,8 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
             } else {
                 val rid = GtfsStaticCache.stopTimesByStop[stop.stopId]
                     ?.firstOrNull()?.let { st -> GtfsStaticCache.trips[st.tripId]?.routeId }
-                rid?.let { r -> GtfsStaticCache.routes[r]?.color
-                    ?.let { hex -> runCatching { Color.parseColor("#$hex") }.getOrNull() }
-                } ?: Color.parseColor("#FF8F00")
+                rid?.let { r -> routeColor(r, GtfsStaticCache.routes[r]?.color) }
+                    ?: Color.parseColor("#FF8F00")
             }
 
             val circle = map.addCircle(
@@ -378,8 +381,7 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
             val newPos = LatLng(vehicle.lat, vehicle.lon)
             val route = GtfsStaticCache.routes[vehicle.routeId]
             val routeShortName = route?.shortName ?: vehicle.routeId.take(4)
-            val colorInt = runCatching { Color.parseColor("#${route?.color ?: "1565C0"}") }
-                .getOrDefault(Color.parseColor("#1565C0"))
+            val colorInt = routeColor(vehicle.routeId, route?.color)
 
             val existing = busMarkerMap[vehicle.vehicleId]
             if (existing == null) {
@@ -595,6 +597,15 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
     // ---------------------------------------------------------------------------
     // Lifecycle passthrough
     // ---------------------------------------------------------------------------
+
+    /** Returns the route color, falling back to a distinct hue derived from routeId. */
+    private fun routeColor(routeId: String, colorHex: String?): Int {
+        if (!colorHex.isNullOrBlank()) {
+            runCatching { return Color.parseColor("#$colorHex") }
+        }
+        val hue = ((routeId.fold(0) { acc, c -> acc * 31 + c.code } and 0x7FFFFFFF) % 300).toFloat() + 30f
+        return Color.HSVToColor(floatArrayOf(hue, 0.75f, 0.80f))
+    }
 
     override fun onResume() { super.onResume(); binding.map.onResume() }
 

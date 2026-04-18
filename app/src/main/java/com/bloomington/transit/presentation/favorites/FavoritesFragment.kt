@@ -5,7 +5,10 @@ import android.graphics.Color
 import android.os.Bundle
 import android.view.*
 import android.widget.ArrayAdapter
+import android.widget.EditText
+import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.appcompat.app.AlertDialog
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
@@ -35,12 +38,13 @@ class FavoritesFragment : Fragment() {
 
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
-        viewModel = ViewModelProvider(
-            this,
-            FavoritesViewModelFactory(requireContext())
-        ).get(FavoritesViewModel::class.java)
+        viewModel = ViewModelProvider(this, FavoritesViewModelFactory(requireContext()))
+            .get(FavoritesViewModel::class.java)
 
-        val adapter = FavoritesAdapter { stopId -> viewModel.removeFavorite(stopId) }
+        val adapter = FavoritesAdapter(
+            onRemove   = { stopId -> viewModel.removeFavorite(stopId) },
+            onNickname = { info  -> showNicknameDialog(info) }
+        )
         binding.rvFavorites.layoutManager = LinearLayoutManager(requireContext())
         binding.rvFavorites.adapter = adapter
 
@@ -63,7 +67,6 @@ class FavoritesFragment : Fragment() {
                     binding.rvFavorites.visibility =
                         if (state.favorites.isEmpty()) View.GONE else View.VISIBLE
 
-                    // Refresh autocomplete when GTFS data becomes available
                     if (state.allStops.size != currentAllStops.size) {
                         currentAllStops = state.allStops
                         acAdapter.clear()
@@ -75,14 +78,84 @@ class FavoritesFragment : Fragment() {
         }
     }
 
+    private fun showNicknameDialog(info: FavoriteStopInfo) {
+        val ctx = requireContext()
+        val dp = resources.displayMetrics.density
+
+        val suggestions = listOf("🏠 Home", "💼 Work", "💼 Work 2", "👥 Friends Home",
+            "🏫 School", "🏋 Gym", "☕ Cafe", "🛍 Mall", "🏥 Hospital", "🌳 Park")
+
+        val input = EditText(ctx).apply {
+            hint = "Nickname (e.g. Home, Work)"
+            setText(info.nickname)
+            setSelectAllOnFocus(true)
+            val pad = (12 * dp).toInt()
+            setPadding(pad, pad, pad, pad)
+        }
+
+        val chipRow = LinearLayout(ctx).apply {
+            orientation = LinearLayout.HORIZONTAL
+            val pad = (16 * dp).toInt()
+            setPadding(pad, 0, pad, pad)
+        }
+        val scroll = android.widget.HorizontalScrollView(ctx).apply {
+            isHorizontalScrollBarEnabled = false
+            addView(chipRow)
+        }
+
+        suggestions.forEach { label ->
+            val chip = TextView(ctx).apply {
+                text = label
+                textSize = 13f
+                setTextColor(Color.WHITE)
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    cornerRadius = 40 * dp
+                    setColor(Color.parseColor("#1565C0"))
+                }
+                val h = (8 * dp).toInt(); val v = (4 * dp).toInt()
+                setPadding(h * 2, v, h * 2, v)
+                val lp = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { marginEnd = (8 * dp).toInt() }
+                layoutParams = lp
+                setOnClickListener { input.setText(label.substringAfter(" ")) }
+            }
+            chipRow.addView(chip)
+        }
+
+        val container = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(input)
+            addView(scroll)
+        }
+
+        AlertDialog.Builder(ctx)
+            .setTitle("Nickname for ${info.stop.name}")
+            .setView(container)
+            .setPositiveButton("Save") { _, _ ->
+                viewModel.setNickname(info.stop.stopId, input.text.toString().trim())
+            }
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Clear") { _, _ ->
+                viewModel.setNickname(info.stop.stopId, "")
+            }
+            .show()
+    }
+
     override fun onDestroyView() {
         super.onDestroyView()
         _binding = null
     }
 }
 
+// ---------------------------------------------------------------------------
+// Adapter
+// ---------------------------------------------------------------------------
+
 class FavoritesAdapter(
-    private val onRemove: (String) -> Unit
+    private val onRemove: (String) -> Unit,
+    private val onNickname: (FavoriteStopInfo) -> Unit
 ) : RecyclerView.Adapter<FavoritesAdapter.VH>() {
 
     private var items: List<FavoriteStopInfo> = emptyList()
@@ -104,6 +177,9 @@ class FavoritesAdapter(
         val inflater = LayoutInflater.from(holder.itemView.context)
         with(holder.binding) {
             tvStopName.text = info.stop.name
+            tvNickname.text = info.nickname.ifEmpty { "Tap ✏ to add nickname" }
+            tvNickname.alpha = if (info.nickname.isNotEmpty()) 1f else 0.5f
+            btnNickname.setOnClickListener { onNickname(info) }
             btnRemove.setOnClickListener { onRemove(info.stop.stopId) }
 
             llArrivalChips.removeAllViews()
