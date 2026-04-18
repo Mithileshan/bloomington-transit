@@ -54,7 +54,7 @@ class HomeViewModel(private val context: Context) : ViewModel() {
         viewModelScope.launch {
             while (true) {
                 if (userLat != 0.0 || userLon != 0.0) fetchNetworkData()
-                delay(15_000)
+                delay(3_000)
             }
         }
     }
