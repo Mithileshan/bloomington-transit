@@ -1,8 +1,11 @@
 package com.bloomington.transit.presentation.favorites
 
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.os.Bundle
 import android.view.*
 import android.widget.ArrayAdapter
+import android.widget.TextView
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ViewModelProvider
@@ -10,6 +13,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import com.bloomington.transit.data.local.GtfsStaticCache
 import com.bloomington.transit.data.model.GtfsStop
 import com.bloomington.transit.databinding.FragmentFavoritesBinding
 import com.bloomington.transit.databinding.ItemFavoriteStopBinding
@@ -56,6 +60,8 @@ class FavoritesFragment : Fragment() {
                     adapter.submitList(state.favorites)
                     binding.tvEmpty.visibility =
                         if (state.favorites.isEmpty()) View.VISIBLE else View.GONE
+                    binding.rvFavorites.visibility =
+                        if (state.favorites.isEmpty()) View.GONE else View.VISIBLE
 
                     // Refresh autocomplete when GTFS data becomes available
                     if (state.allStops.size != currentAllStops.size) {
@@ -95,12 +101,33 @@ class FavoritesAdapter(
 
     override fun onBindViewHolder(holder: VH, position: Int) {
         val info = items[position]
+        val inflater = LayoutInflater.from(holder.itemView.context)
         with(holder.binding) {
             tvStopName.text = info.stop.name
-            tvArrivals.text = info.nextArrivals.joinToString("  |  ") {
-                "Rt ${it.routeShortName} ${it.etaLabel}"
-            }.ifEmpty { "No upcoming departures" }
             btnRemove.setOnClickListener { onRemove(info.stop.stopId) }
+
+            llArrivalChips.removeAllViews()
+            if (info.nextArrivals.isEmpty()) {
+                val chip = inflater.inflate(
+                    com.bloomington.transit.R.layout.item_arrival_chip, llArrivalChips, false
+                ) as TextView
+                chip.text = "No upcoming"
+                chip.backgroundTintList = ColorStateList.valueOf(Color.parseColor("#9E9E9E"))
+                llArrivalChips.addView(chip)
+            } else {
+                info.nextArrivals.forEach { entry ->
+                    val chip = inflater.inflate(
+                        com.bloomington.transit.R.layout.item_arrival_chip, llArrivalChips, false
+                    ) as TextView
+                    chip.text = "Rt ${entry.routeShortName}  ${entry.etaLabel}"
+                    val routeColor = GtfsStaticCache.routes[entry.routeId]?.color
+                        ?.takeIf { it.isNotEmpty() }
+                        ?.let { runCatching { Color.parseColor("#$it") }.getOrNull() }
+                        ?: Color.parseColor("#1565C0")
+                    chip.backgroundTintList = ColorStateList.valueOf(routeColor)
+                    llArrivalChips.addView(chip)
+                }
+            }
         }
     }
 }

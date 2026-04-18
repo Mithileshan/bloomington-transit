@@ -4,43 +4,72 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="wrap_content"
-    android:layout_marginHorizontal="12dp"
-    android:layout_marginTop="8dp"
-    app:cardElevation="2dp"
-    app:cardCornerRadius="12dp">
+    android:layout_marginHorizontal="16dp"
+    android:layout_marginTop="10dp"
+    app:cardElevation="3dp"
+    app:cardCornerRadius="16dp"
+    app:strokeWidth="0dp">
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="vertical"
-        android:padding="12dp">
+        android:padding="16dp">
 
-        <!-- Header: duration + depart/arrive times -->
+        <!-- Header: duration + time range + save star -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="horizontal"
             android:gravity="center_vertical"
-            android:layout_marginBottom="10dp">
+            android:layout_marginBottom="12dp">
 
-            <TextView
-                android:id="@+id/tv_duration"
+            <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:textStyle="bold"
-                android:textSize="16sp"
-                android:textColor="?attr/colorOnSurface" />
+                android:orientation="vertical">
 
-            <TextView
-                android:id="@+id/tv_time_range"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:textSize="13sp"
-                android:textColor="?attr/colorOnSurfaceVariant" />
+                <TextView
+                    android:id="@+id/tv_duration"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textStyle="bold"
+                    android:textSize="17sp"
+                    android:textColor="?attr/colorOnSurface" />
+
+                <TextView
+                    android:id="@+id/tv_time_range"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:textSize="13sp"
+                    android:textColor="?attr/colorOnSurfaceVariant"
+                    android:layout_marginTop="2dp" />
+
+            </LinearLayout>
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btn_save_route"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                app:icon="@android:drawable/btn_star_big_off"
+                app:iconSize="22dp"
+                app:iconPadding="0dp"
+                app:iconTint="#FFA000"
+                android:padding="0dp"
+                android:contentDescription="Save route" />
+
         </LinearLayout>
 
-        <!-- Legs container — populated dynamically in adapter -->
+        <!-- Divider -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="?attr/colorOutlineVariant"
+            android:layout_marginBottom="12dp" />
+
+        <!-- Legs container — populated dynamically -->
         <LinearLayout
             android:id="@+id/ll_legs"
             android:layout_width="match_parent"

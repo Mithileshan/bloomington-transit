@@ -40,7 +40,7 @@ object ArrivalTimeCalculator {
         return base + delay
     }
 
-    private fun formatTime(unixSec: Long): String {
+    fun formatTime(unixSec: Long): String {
         val cal = Calendar.getInstance().apply { timeInMillis = unixSec * 1000L }
         val h = cal.get(Calendar.HOUR_OF_DAY)
         val m = cal.get(Calendar.MINUTE)

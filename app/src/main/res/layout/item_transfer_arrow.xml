@@ -14,7 +14,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:textSize="11sp"
-        android:textColor="#FF6D00"
+        android:textColor="@color/bt_orange"
         android:drawablePadding="4dp" />
 
 </LinearLayout>

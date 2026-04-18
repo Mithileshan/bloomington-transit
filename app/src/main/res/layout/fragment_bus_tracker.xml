@@ -16,37 +16,25 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:padding="8dp"
-        android:text="Tap a stop marker to set arrival alert"
+        android:text="Tap a stop marker to track it"
         android:textSize="12sp" />
 
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:orientation="horizontal"
-        android:padding="8dp"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingBottom="6dp"
         android:gravity="center_vertical">
 
         <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Alert radius: "
-            android:textSize="12sp" />
-
-        <SeekBar
-            android:id="@+id/seek_alert_distance"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:max="9"
-            android:progress="2" />
-
-        <TextView
-            android:id="@+id/tv_alert_distance"
-            android:layout_width="60dp"
-            android:layout_height="wrap_content"
-            android:text="300m"
+            android:text="🔔 Alerts at 15, 10 &amp; 5 min before arrival"
             android:textSize="12sp"
-            android:gravity="end" />
+            android:textColor="?attr/colorOnSurfaceVariant" />
 
         <Button
             android:id="@+id/btn_clear_alert"

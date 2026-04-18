@@ -18,13 +18,15 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 data class MapUiState(
     val vehicles: List<VehiclePosition> = emptyList(),
     val tripUpdates: List<TripUpdate> = emptyList(),
     val isLoading: Boolean = true,
-    val error: String? = null
+    val error: String? = null,
+    val lastUpdatedMs: Long = 0L
 )
 
 class RouteMapViewModel(app: Application) : AndroidViewModel(app) {
@@ -38,8 +40,9 @@ class RouteMapViewModel(app: Application) : AndroidViewModel(app) {
     private val _uiState = MutableStateFlow(MapUiState())
     val uiState: StateFlow<MapUiState> = _uiState
 
-    val visibleRouteIds: StateFlow<Set<String>?> = prefs.visibleRouteIds
-        .stateIn(viewModelScope, SharingStarted.Eagerly, null)
+    // "" = unresolved (set to nearest route once location known, or Route 6 as fallback)
+    private val _selectedRouteId = MutableStateFlow("")
+    val selectedRouteId: StateFlow<String> = _selectedRouteId
 
     val favoriteStopIds: StateFlow<Set<String>> = prefs.favoriteStopIds
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptySet())
@@ -47,13 +50,17 @@ class RouteMapViewModel(app: Application) : AndroidViewModel(app) {
     val allRouteIds: List<String>
         get() = GtfsStaticCache.routes.keys.sorted()
 
+    fun selectRoute(routeId: String) {
+        _selectedRouteId.value = routeId
+    }
+
     init {
         startPolling()
     }
 
     private fun startPolling() {
         viewModelScope.launch {
-            while (true) {
+            while (isActive) {
                 try {
                     val vehicles = getVehicles()
                     val updates = getTripUpdates()
@@ -61,7 +68,8 @@ class RouteMapViewModel(app: Application) : AndroidViewModel(app) {
                         vehicles = vehicles,
                         tripUpdates = updates,
                         isLoading = false,
-                        error = null
+                        error = null,
+                        lastUpdatedMs = System.currentTimeMillis()
                     )
                     checkTripTracking(vehicles)
                 } catch (e: Exception) {
@@ -108,7 +116,4 @@ class RouteMapViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setVisibleRoutes(ids: Set<String>) {
-        viewModelScope.launch { prefs.setVisibleRoutes(ids) }
-    }
 }

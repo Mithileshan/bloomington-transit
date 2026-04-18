@@ -1,5 +1,6 @@
 package com.bloomington.transit.presentation.map
 
+import android.graphics.Color
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -10,6 +11,7 @@ import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import com.bloomington.transit.data.local.GtfsStaticCache
 import com.bloomington.transit.data.local.PreferencesManager
+import com.bloomington.transit.notification.ArrivalNotificationManager
 import com.bloomington.transit.data.repository.TransitRepositoryImpl
 import com.bloomington.transit.databinding.ItemStopScheduleRowBinding
 import com.bloomington.transit.databinding.SheetStopScheduleBinding
@@ -28,9 +30,13 @@ class StopScheduleSheet : BottomSheetDialogFragment() {
     private val binding get() = _binding!!
 
     companion object {
-        fun newInstance(stopId: String) = StopScheduleSheet().apply {
-            arguments = Bundle().also { it.putString("stopId", stopId) }
-        }
+        fun newInstance(stopId: String, filterRouteId: String = "") =
+            StopScheduleSheet().apply {
+                arguments = Bundle().also {
+                    it.putString("stopId", stopId)
+                    it.putString("filterRouteId", filterRouteId)
+                }
+            }
     }
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View {
@@ -47,35 +53,53 @@ class StopScheduleSheet : BottomSheetDialogFragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
         val stopId = arguments?.getString("stopId") ?: return
+        val filterRouteId = arguments?.getString("filterRouteId") ?: ""
         val stop = GtfsStaticCache.stops[stopId]
         val prefs = PreferencesManager(requireContext())
 
-        binding.tvScheduleTitle.text = "${stop?.name ?: stopId} Schedule"
+        val routeLabel = if (filterRouteId.isNotEmpty()) {
+            val r = GtfsStaticCache.routes[filterRouteId]
+            " — Route ${r?.shortName ?: filterRouteId}"
+        } else ""
+        binding.tvScheduleTitle.text = "${stop?.name ?: stopId} Schedule$routeLabel"
         binding.btnBack.setOnClickListener { dismiss() }
 
+        val notifManager = ArrivalNotificationManager(requireContext())
         val adapter = StopScheduleAdapter { entry ->
             lifecycleScope.launch {
                 prefs.setTrackedTrip(entry.tripId, stopId)
+                val stopName = stop?.name ?: stopId
+                notifManager.notifyTrackingStarted(entry.routeShortName, stopName)
                 Toast.makeText(
                     requireContext(),
-                    "Tracking Route ${entry.routeShortName} — you'll be notified 4 stops before arrival",
+                    "Tracking Route ${entry.routeShortName} — you'll be notified when approaching",
                     Toast.LENGTH_LONG
                 ).show()
             }
         }
-        binding.rvStopSchedule.layoutManager = LinearLayoutManager(requireContext())
+
+        val layoutManager = LinearLayoutManager(requireContext())
+        binding.rvStopSchedule.layoutManager = layoutManager
         binding.rvStopSchedule.adapter = adapter
 
         lifecycleScope.launch {
             val entries = withContext(Dispatchers.Default) {
                 try {
                     val updates = GetTripUpdatesUseCase(TransitRepositoryImpl())()
-                    GetScheduleForStopUseCase()(stopId, updates)
+                    GetScheduleForStopUseCase()(stopId, updates, filterRouteId)
                 } catch (_: Exception) {
-                    GetScheduleForStopUseCase()(stopId, emptyList())
+                    GetScheduleForStopUseCase()(stopId, emptyList(), filterRouteId)
                 }
             }
             adapter.submitList(entries)
+
+            // Scroll to first upcoming (non-past) entry
+            val firstUpcomingIdx = entries.indexOfFirst { !it.isPast }
+            if (firstUpcomingIdx > 0) {
+                binding.rvStopSchedule.post {
+                    layoutManager.scrollToPositionWithOffset(firstUpcomingIdx, 0)
+                }
+            }
         }
     }
 
@@ -107,10 +131,20 @@ class StopScheduleAdapter(
         val entry = items[position]
         holder.binding.tvRowRoute.text = "${entry.routeShortName} ${entry.headsign}"
         holder.binding.tvRowTime.text = entry.etaLabel
-        holder.binding.btnTrack.setOnClickListener { onTrack(entry) }
-        holder.itemView.setBackgroundColor(
-            if (position == 0) android.graphics.Color.parseColor("#FFF3E0")
-            else android.graphics.Color.TRANSPARENT
-        )
+
+        if (entry.isPast) {
+            holder.itemView.alpha = 0.38f
+            holder.binding.btnTrack.visibility = View.GONE
+            holder.itemView.setBackgroundColor(Color.TRANSPARENT)
+        } else {
+            holder.itemView.alpha = 1f
+            holder.binding.btnTrack.visibility = View.VISIBLE
+            holder.binding.btnTrack.setOnClickListener { onTrack(entry) }
+            val firstUpcomingPos = items.indexOfFirst { !it.isPast }
+            holder.itemView.setBackgroundColor(
+                if (position == firstUpcomingPos) Color.parseColor("#FFF3E0")
+                else Color.TRANSPARENT
+            )
+        }
     }
 }

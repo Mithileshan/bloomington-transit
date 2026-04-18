@@ -1,18 +1,23 @@
 package com.bloomington.transit.presentation.map
 
 import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Typeface
+import android.location.Location
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.appcompat.app.AlertDialog
 import androidx.core.app.ActivityCompat
 import androidx.core.os.bundleOf
 import androidx.fragment.app.Fragment
@@ -23,11 +28,16 @@ import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.fragment.findNavController
 import com.bloomington.transit.R
 import com.bloomington.transit.data.local.GtfsStaticCache
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import com.bloomington.transit.data.local.PreferencesManager
+import com.bloomington.transit.data.model.GtfsStop
 import com.bloomington.transit.data.model.VehiclePosition
 import com.bloomington.transit.databinding.FragmentRouteMapBinding
-import com.google.android.gms.location.LocationRequest
+import com.google.android.gms.location.CurrentLocationRequest
 import com.google.android.gms.location.LocationServices
+import com.google.android.gms.location.Priority
 import com.google.android.gms.maps.CameraUpdateFactory
 import com.google.android.gms.maps.GoogleMap
 import com.google.android.gms.maps.OnMapReadyCallback
@@ -43,6 +53,8 @@ import com.google.android.gms.maps.model.PolylineOptions
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
 
+private data class RouteItem(val routeId: String, val displayName: String, val colorInt: Int)
+
 class RouteMapFragment : Fragment(), OnMapReadyCallback {
 
     private var _binding: FragmentRouteMapBinding? = null
@@ -52,11 +64,12 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
 
     private var googleMap: GoogleMap? = null
     private val routePolylines = mutableMapOf<String, Polyline>()
-    private val stopCircles = mutableListOf<Pair<Circle, com.bloomington.transit.data.model.GtfsStop>>()
+    private val stopCircles = mutableListOf<Pair<Circle, GtfsStop>>()
     private val busMarkerMap = mutableMapOf<String, Marker>()
     private val favoriteMarkers = mutableMapOf<String, Marker>()
 
-    private val bloomington = LatLng(39.1653, -86.5264)
+    private var routeItems: List<RouteItem> = emptyList()
+    private var spinnerReady = false
 
     private val locationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -64,7 +77,7 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
         if (grants[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
             grants[Manifest.permission.ACCESS_COARSE_LOCATION] == true) {
             googleMap?.isMyLocationEnabled = true
-            performFlyToLocation()
+            fetchLocationAndAutoSelect()
         } else {
             Toast.makeText(requireContext(), "Location permission denied", Toast.LENGTH_SHORT).show()
         }
@@ -80,9 +93,7 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
         super.onViewCreated(view, savedInstanceState)
         binding.map.onCreate(savedInstanceState)
         binding.map.getMapAsync(this)
-
         binding.fabMyLocation.setOnClickListener { flyToMyLocation() }
-        binding.fabFilterRoutes.setOnClickListener { showRouteFilterDialog() }
     }
 
     override fun onMapReady(map: GoogleMap) {
@@ -91,59 +102,183 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
         map.uiSettings.isZoomControlsEnabled = false
         map.uiSettings.isMyLocationButtonEnabled = false
 
-        if (ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-            || ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-            map.isMyLocationEnabled = true
-        }
+        val fineOk = ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarseOk = ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (fineOk || coarseOk) map.isMyLocationEnabled = true
 
-        // Restore saved camera position
         viewLifecycleOwner.lifecycleScope.launch {
             val state = prefs.getMapState()
-            map.moveCamera(CameraUpdateFactory.newLatLngZoom(
-                LatLng(state.lat, state.lon), state.zoom.toFloat()
-            ))
+            map.moveCamera(CameraUpdateFactory.newLatLngZoom(LatLng(state.lat, state.lon), state.zoom.toFloat()))
         }
 
         map.setOnCircleClickListener { circle ->
-            stopCircles.find { it.first == circle }?.let { (_, stop) ->
-                showStopInfoDialog(stop)
-            }
+            stopCircles.find { it.first == circle }?.let { (_, stop) -> showStopInfoDialog(stop) }
         }
 
         map.setOnMarkerClickListener { marker ->
-            val vehicleId = marker.tag as? String
-            if (vehicleId != null) {
-                findNavController().navigate(
-                    R.id.action_routeMapFragment_to_busTrackerFragment,
-                    bundleOf("vehicleId" to vehicleId)
-                )
-                true
-            } else false
+            val vehicleId = marker.tag as? String ?: return@setOnMarkerClickListener false
+            findNavController().navigate(
+                R.id.action_routeMapFragment_to_busTrackerFragment,
+                bundleOf("vehicleId" to vehicleId)
+            )
+            true
         }
 
-        drawAllRouteShapes(viewModel.visibleRouteIds.value)
-        drawStopMarkers()
+        buildSpinner()
         observeState()
+
+        if (fineOk || coarseOk) {
+            fetchLocationAndAutoSelect()
+        } else {
+            locationPermissionLauncher.launch(arrayOf(
+                Manifest.permission.ACCESS_FINE_LOCATION,
+                Manifest.permission.ACCESS_COARSE_LOCATION
+            ))
+        }
     }
 
-    private fun drawAllRouteShapes(visibleIds: Set<String>?) {
+    // ---------------------------------------------------------------------------
+    // Spinner
+    // ---------------------------------------------------------------------------
+
+    private fun buildSpinner() {
+        if (!GtfsStaticCache.isLoaded) {
+            viewLifecycleOwner.lifecycleScope.launch {
+                GtfsStaticCache.loaded.filter { it }.collect { buildSpinner() }
+            }
+            return
+        }
+
+        val defaultColor = Color.parseColor("#1565C0")
+        val allItem = RouteItem("", "All Routes", defaultColor)
+        val routes = GtfsStaticCache.routes.values
+            .sortedWith(compareBy { it.shortName.padStart(4, '0') })
+            .map { route ->
+                val color = runCatching { Color.parseColor("#${route.color}") }.getOrDefault(defaultColor)
+                RouteItem(route.routeId, "Route ${route.shortName} — ${route.longName}", color)
+            }
+        routeItems = listOf(allItem) + routes
+
+        spinnerReady = false
+        binding.spinnerRoute.adapter = RouteSpinnerAdapter(requireContext(), routeItems)
+
+        // Restore current ViewModel selection
+        val currentId = viewModel.selectedRouteId.value
+        if (currentId.isNotEmpty()) {
+            val pos = routeItems.indexOfFirst { it.routeId == currentId }
+            if (pos >= 0) binding.spinnerRoute.setSelection(pos, false)
+        }
+
+        binding.spinnerRoute.post { spinnerReady = true }
+
+        binding.spinnerRoute.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>, v: View?, pos: Int, id: Long) {
+                if (!spinnerReady) return
+                val item = routeItems.getOrNull(pos) ?: return
+                if (item.routeId != viewModel.selectedRouteId.value) {
+                    viewModel.selectRoute(item.routeId)
+                }
+            }
+            override fun onNothingSelected(parent: AdapterView<*>) {}
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Location auto-select
+    // ---------------------------------------------------------------------------
+
+    private fun fetchLocationAndAutoSelect() {
+        val fineOk = ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarseOk = ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!fineOk && !coarseOk) return
+
+        val client = LocationServices.getFusedLocationProviderClient(requireActivity())
+        client.lastLocation.addOnSuccessListener { loc ->
+            if (loc != null) {
+                googleMap?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), 15f))
+            } else {
+                val req = CurrentLocationRequest.Builder()
+                    .setPriority(Priority.PRIORITY_HIGH_ACCURACY)
+                    .build()
+                client.getCurrentLocation(req, null).addOnSuccessListener { fresh ->
+                    if (fresh != null) {
+                        googleMap?.animateCamera(CameraUpdateFactory.newLatLngZoom(LatLng(fresh.latitude, fresh.longitude), 15f))
+                    }
+                }
+            }
+        }
+    }
+
+    private fun applyRouteSelection(routeId: String) {
+        viewModel.selectRoute(routeId)
+        val pos = routeItems.indexOfFirst { it.routeId == routeId }
+        if (pos >= 0) binding.spinnerRoute.setSelection(pos, false)
+    }
+
+    // ---------------------------------------------------------------------------
+    // State observation
+    // ---------------------------------------------------------------------------
+
+    private fun observeState() {
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                launch {
+                    viewModel.uiState.collect { state ->
+                        val routeId = viewModel.selectedRouteId.value
+                        updateBusMarkers(state.vehicles, routeId)
+                        binding.tvStatus.text = when {
+                            state.isLoading -> "Loading real-time data…"
+                            state.error != null -> "${state.error} • Retrying in 10s"
+                            else -> {
+                                val busCount = if (routeId.isEmpty()) state.vehicles.size
+                                              else state.vehicles.count { it.routeId == routeId }
+                                val time = if (state.lastUpdatedMs > 0)
+                                    SimpleDateFormat("h:mm:ss a", Locale.getDefault()).format(Date(state.lastUpdatedMs))
+                                else "—"
+                                "$busCount buses active  •  Updated $time"
+                            }
+                        }
+                    }
+                }
+                launch {
+                    viewModel.selectedRouteId.collect { routeId ->
+                        drawRouteShapes(routeId)
+                        drawStopMarkers(routeId)
+                        updateBusMarkers(viewModel.uiState.value.vehicles, routeId)
+                    }
+                }
+                launch {
+                    GtfsStaticCache.loaded.filter { it }.collect {
+                        if (routeItems.isEmpty()) buildSpinner()
+                        val routeId = viewModel.selectedRouteId.value
+                        drawRouteShapes(routeId)
+                        drawStopMarkers(routeId)
+                        drawFavoriteStars(viewModel.favoriteStopIds.value)
+                    }
+                }
+                launch {
+                    viewModel.favoriteStopIds.collect { favIds -> drawFavoriteStars(favIds) }
+                }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Map drawing
+    // ---------------------------------------------------------------------------
+
+    private fun drawRouteShapes(selectedRouteId: String) {
         val map = googleMap ?: return
         routePolylines.values.forEach { it.remove() }
         routePolylines.clear()
 
-        val effectiveIds: Set<String> = when (visibleIds) {
-            null -> GtfsStaticCache.routes.values.filter { it.shortName == "6" }.map { it.routeId }.toSet()
-            else -> visibleIds
-        }
-        if (effectiveIds.isEmpty() && visibleIds != null) return  // deselect all
-
         for ((shapeId, shapes) in GtfsStaticCache.shapes) {
-            val routeId = GtfsStaticCache.trips.values.firstOrNull { it.shapeId == shapeId }?.routeId ?: shapeId
-            if (routeId !in effectiveIds) continue
+            val routeId = GtfsStaticCache.trips.values.firstOrNull { it.shapeId == shapeId }?.routeId ?: continue
+            if (selectedRouteId.isNotEmpty() && routeId != selectedRouteId) continue
 
             val route = GtfsStaticCache.routes[routeId]
-            val colorInt = try { Color.parseColor("#${route?.color ?: "1565C0"}") }
-            catch (_: Exception) { Color.parseColor("#1565C0") }
+            val colorInt = runCatching { Color.parseColor("#${route?.color ?: "1565C0"}") }
+                .getOrDefault(Color.parseColor("#1565C0"))
 
             val polyline = map.addPolyline(
                 PolylineOptions()
@@ -156,35 +291,41 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
         }
     }
 
-    private fun drawStopMarkers(visibleIds: Set<String>? = viewModel.visibleRouteIds.value) {
+    private fun drawStopMarkers(selectedRouteId: String) {
         val map = googleMap ?: return
         stopCircles.forEach { (c, _) -> c.remove() }
         stopCircles.clear()
 
-        val effectiveIds: Set<String> = when (visibleIds) {
-            null -> GtfsStaticCache.routes.values.filter { it.shortName == "6" }.map { it.routeId }.toSet()
-            else -> visibleIds
+        val stopsToShow: Collection<GtfsStop> = if (selectedRouteId.isEmpty()) {
+            GtfsStaticCache.stops.values
+        } else {
+            val tripIds = GtfsStaticCache.tripsByRoute[selectedRouteId] ?: emptyList()
+            val stopIds = tripIds.flatMap { tid ->
+                GtfsStaticCache.stopTimesByTrip[tid]?.map { it.stopId } ?: emptyList()
+            }.toSet()
+            stopIds.mapNotNull { GtfsStaticCache.stops[it] }
         }
 
-        for (stop in GtfsStaticCache.stops.values) {
-            // Only show stops served by at least one visible route
-            val stopRoutes = GtfsStaticCache.stopTimesByStop[stop.stopId]
-                ?.mapNotNull { st -> GtfsStaticCache.trips[st.tripId]?.routeId }
-                ?.toSet() ?: emptySet()
-            if (effectiveIds.isNotEmpty() && stopRoutes.none { it in effectiveIds }) continue
+        val routeColor = GtfsStaticCache.routes[selectedRouteId]?.color
+            ?.let { runCatching { Color.parseColor("#$it") }.getOrNull() }
+            ?: Color.parseColor("#FF8F00")
 
-            val primaryRouteId = stopRoutes.firstOrNull { it in effectiveIds } ?: stopRoutes.firstOrNull()
-            val fillColor = primaryRouteId?.let { rid ->
-                GtfsStaticCache.routes[rid]?.color?.let { hex ->
-                    runCatching { Color.parseColor("#$hex") }.getOrNull()
-                }
-            } ?: Color.parseColor("#FF8F00")
+        for (stop in stopsToShow) {
+            val fillColor = if (selectedRouteId.isNotEmpty()) {
+                routeColor or 0xFF000000.toInt()
+            } else {
+                val rid = GtfsStaticCache.stopTimesByStop[stop.stopId]
+                    ?.firstOrNull()?.let { st -> GtfsStaticCache.trips[st.tripId]?.routeId }
+                rid?.let { r -> GtfsStaticCache.routes[r]?.color
+                    ?.let { hex -> runCatching { Color.parseColor("#$hex") }.getOrNull() }
+                } ?: Color.parseColor("#FF8F00")
+            }
 
             val circle = map.addCircle(
                 CircleOptions()
                     .center(LatLng(stop.lat, stop.lon))
                     .radius(10.0)
-                    .fillColor(fillColor or 0xFF000000.toInt())
+                    .fillColor(fillColor)
                     .strokeColor(Color.WHITE)
                     .strokeWidth(2f)
                     .clickable(true)
@@ -193,47 +334,42 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
         }
     }
 
-    private fun observeState() {
-        viewLifecycleOwner.lifecycleScope.launch {
-            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-                launch {
-                    viewModel.uiState.collect { state ->
-                        updateBusMarkers(state.vehicles, viewModel.visibleRouteIds.value ?: emptySet())
-                        binding.tvStatus.text = if (state.isLoading) "Loading…"
-                        else "${state.vehicles.size} buses active"
-                    }
-                }
-                launch {
-                    viewModel.visibleRouteIds.collect { visibleIds ->
-                        drawAllRouteShapes(visibleIds)
-                        drawStopMarkers(visibleIds)
-                        updateBusMarkers(viewModel.uiState.value.vehicles, visibleIds ?: emptySet())
-                    }
-                }
-                launch {
-                    GtfsStaticCache.loaded.filter { it }.collect {
-                        val visible = viewModel.visibleRouteIds.value
-                        drawAllRouteShapes(visible)
-                        drawStopMarkers(visible)
-                        drawFavoriteStars(viewModel.favoriteStopIds.value)
-                    }
-                }
-                launch {
-                    viewModel.favoriteStopIds.collect { favIds ->
-                        drawFavoriteStars(favIds)
-                    }
-                }
+    private fun updateBusMarkers(vehicles: List<VehiclePosition>, selectedRouteId: String) {
+        val map = googleMap ?: return
+        val filtered = if (selectedRouteId.isEmpty()) vehicles
+                       else vehicles.filter { it.routeId == selectedRouteId }
+
+        val currentIds = filtered.map { it.vehicleId }.toSet()
+        busMarkerMap.keys.filter { it !in currentIds }.forEach { id -> busMarkerMap.remove(id)?.remove() }
+
+        for (vehicle in filtered) {
+            val pos = LatLng(vehicle.lat, vehicle.lon)
+            val route = GtfsStaticCache.routes[vehicle.routeId]
+            val colorInt = runCatching { Color.parseColor("#${route?.color ?: "1565C0"}") }
+                .getOrDefault(Color.parseColor("#1565C0"))
+
+            val existing = busMarkerMap[vehicle.vehicleId]
+            if (existing == null) {
+                val marker = map.addMarker(
+                    MarkerOptions()
+                        .position(pos)
+                        .title("Route ${route?.shortName ?: vehicle.routeId}")
+                        .snippet("Bus ${vehicle.label.ifEmpty { vehicle.vehicleId }} — tap to track")
+                        .icon(createBusDot(colorInt))
+                )
+                marker?.tag = vehicle.vehicleId
+                if (marker != null) busMarkerMap[vehicle.vehicleId] = marker
+            } else {
+                existing.position = pos
             }
         }
     }
 
     private fun drawFavoriteStars(favStopIds: Set<String>) {
         val map = googleMap ?: return
-        // Remove markers for stops no longer in favorites
         favoriteMarkers.keys.filter { it !in favStopIds }.forEach { id ->
             favoriteMarkers.remove(id)?.remove()
         }
-        // Add markers for newly favorited stops
         for (stopId in favStopIds) {
             if (favoriteMarkers.containsKey(stopId)) continue
             val stop = GtfsStaticCache.stops[stopId] ?: continue
@@ -248,78 +384,27 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
         }
     }
 
-    private fun createStarIcon(): BitmapDescriptor {
-        val size = 96
-        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#FFA000")
-            style = Paint.Style.FILL
+    // ---------------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------------
+
+    private fun flyToMyLocation() {
+        val fineOk = ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarseOk = ActivityCompat.checkSelfPermission(requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!fineOk && !coarseOk) {
+            locationPermissionLauncher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+            return
         }
-        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.parseColor("#BF360C")
-            style = Paint.Style.STROKE
-            strokeWidth = 5f
-        }
-        val path = android.graphics.Path()
-        val cx = size / 2f
-        val cy = size / 2f
-        val outerR = size / 2f - 6
-        val innerR = outerR * 0.42f
-        val points = 5
-        for (i in 0 until points * 2) {
-            val angle = Math.PI / points * i - Math.PI / 2
-            val r = if (i % 2 == 0) outerR else innerR
-            val x = cx + r * Math.cos(angle).toFloat()
-            val y = cy + r * Math.sin(angle).toFloat()
-            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
-        }
-        path.close()
-        canvas.drawPath(path, paint)
-        canvas.drawPath(path, stroke)
-        return BitmapDescriptorFactory.fromBitmap(bitmap)
+        fetchLocationAndAutoSelect()
     }
 
-    private fun updateBusMarkers(vehicles: List<VehiclePosition>, visibleIds: Set<String>) {
-        val map = googleMap ?: return
-        val filtered = if (visibleIds.isEmpty() && viewModel.visibleRouteIds.value == null) {
-            // first-run: filter to route 6 buses
-            val r6 = GtfsStaticCache.routes.values.filter { it.shortName == "6" }.map { it.routeId }.toSet()
-            vehicles.filter { it.routeId in r6 }
-        } else if (visibleIds.isEmpty()) {
-            emptyList()
-        } else {
-            vehicles.filter { it.routeId in visibleIds }
+    private fun showStopInfoDialog(stop: GtfsStop) {
+        val sheet = StopInfoSheet.newInstance(stop.stopId)
+        sheet.onViewSchedule = {
+            StopScheduleSheet.newInstance(stop.stopId, viewModel.selectedRouteId.value)
+                .show(parentFragmentManager, "schedule")
         }
-
-        val currentIds = filtered.map { it.vehicleId }.toSet()
-        busMarkerMap.keys.filter { it !in currentIds }.forEach { id ->
-            busMarkerMap.remove(id)?.remove()
-        }
-
-        for (vehicle in filtered) {
-            val pos = LatLng(vehicle.lat, vehicle.lon)
-            val route = GtfsStaticCache.routes[vehicle.routeId]
-            val colorInt = try { Color.parseColor("#${route?.color ?: "1565C0"}") }
-            catch (_: Exception) { Color.parseColor("#1565C0") }
-            val title = "Route ${route?.shortName ?: vehicle.routeId}"
-
-            val existing = busMarkerMap[vehicle.vehicleId]
-            if (existing == null) {
-                val marker = map.addMarker(
-                    MarkerOptions()
-                        .position(pos)
-                        .title(title)
-                        .snippet("Bus ${vehicle.label.ifEmpty { vehicle.vehicleId }} — tap to track")
-                        .icon(createBusDot(colorInt))
-                )
-                marker?.tag = vehicle.vehicleId
-                if (marker != null) busMarkerMap[vehicle.vehicleId] = marker
-            } else {
-                existing.position = pos
-                existing.title = title
-            }
-        }
+        sheet.show(parentFragmentManager, "stop_info")
     }
 
     private fun createBusDot(color: Int): BitmapDescriptor {
@@ -327,100 +412,39 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
         val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = color; style = Paint.Style.FILL }
-        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            this.color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 4f
-        }
+        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { this.color = Color.WHITE; style = Paint.Style.STROKE; strokeWidth = 4f }
         canvas.drawCircle(size / 2f, size / 2f, size / 2f - 4, fill)
         canvas.drawCircle(size / 2f, size / 2f, size / 2f - 4, stroke)
         return BitmapDescriptorFactory.fromBitmap(bitmap)
     }
 
-    private fun showStopInfoDialog(stop: com.bloomington.transit.data.model.GtfsStop) {
-        val sheet = StopInfoSheet.newInstance(stop.stopId)
-        sheet.onViewSchedule = {
-            StopScheduleSheet.newInstance(stop.stopId)
-                .show(parentFragmentManager, "schedule")
+    private fun createStarIcon(): BitmapDescriptor {
+        val size = 96
+        val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bitmap)
+        val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#FFA000"); style = Paint.Style.FILL }
+        val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.parseColor("#BF360C"); style = Paint.Style.STROKE; strokeWidth = 5f }
+        val path = android.graphics.Path()
+        val cx = size / 2f; val cy = size / 2f
+        val outerR = size / 2f - 6; val innerR = outerR * 0.42f
+        for (i in 0 until 10) {
+            val angle = Math.PI / 5 * i - Math.PI / 2
+            val r = if (i % 2 == 0) outerR else innerR
+            val x = cx + r * Math.cos(angle).toFloat()
+            val y = cy + r * Math.sin(angle).toFloat()
+            if (i == 0) path.moveTo(x, y) else path.lineTo(x, y)
         }
-        sheet.show(parentFragmentManager, "stop_info")
+        path.close()
+        canvas.drawPath(path, fill)
+        canvas.drawPath(path, stroke)
+        return BitmapDescriptorFactory.fromBitmap(bitmap)
     }
 
-    private fun flyToMyLocation() {
-        val fineGranted = ActivityCompat.checkSelfPermission(
-            requireContext(), Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        val coarseGranted = ActivityCompat.checkSelfPermission(
-            requireContext(), Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        if (!fineGranted && !coarseGranted) {
-            locationPermissionLauncher.launch(arrayOf(
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            ))
-            return
-        }
-        performFlyToLocation()
-    }
+    // ---------------------------------------------------------------------------
+    // Lifecycle passthrough
+    // ---------------------------------------------------------------------------
 
-    @androidx.annotation.RequiresPermission(anyOf = [Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION])
-    private fun performFlyToLocation() {
-        val client = LocationServices.getFusedLocationProviderClient(requireActivity())
-        client.lastLocation.addOnSuccessListener { location ->
-            if (location != null) {
-                googleMap?.animateCamera(
-                    CameraUpdateFactory.newLatLngZoom(LatLng(location.latitude, location.longitude), 15f)
-                )
-            } else {
-                // lastLocation can be null on emulator — request a fresh fix
-                val req = com.google.android.gms.location.CurrentLocationRequest.Builder()
-                    .setPriority(com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY)
-                    .build()
-                client.getCurrentLocation(req, null).addOnSuccessListener { loc ->
-                    if (loc != null) {
-                        googleMap?.animateCamera(
-                            CameraUpdateFactory.newLatLngZoom(LatLng(loc.latitude, loc.longitude), 15f)
-                        )
-                    } else {
-                        Toast.makeText(requireContext(), "Enable location in emulator extended controls", Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
-        }
-    }
-
-    private fun showRouteFilterDialog() {
-        val allIds = GtfsStaticCache.routes.keys.sorted()
-        if (allIds.isEmpty()) {
-            Toast.makeText(requireContext(), "Transit data still loading…", Toast.LENGTH_SHORT).show()
-            return
-        }
-        val labels = allIds.map { id ->
-            val r = GtfsStaticCache.routes[id]
-            "Route ${r?.shortName ?: id}: ${r?.longName ?: ""}"
-        }.toTypedArray()
-
-        val currentVisible = viewModel.visibleRouteIds.value
-        val route6Ids = GtfsStaticCache.routes.values.filter { it.shortName == "6" }.map { it.routeId }.toSet()
-        val checked = BooleanArray(allIds.size) { i ->
-            when {
-                currentVisible == null -> allIds[i] in route6Ids
-                currentVisible.isEmpty() -> false
-                else -> allIds[i] in currentVisible
-            }
-        }
-
-        AlertDialog.Builder(requireContext())
-            .setTitle("Show Routes")
-            .setMultiChoiceItems(labels, checked) { _, which, isChecked -> checked[which] = isChecked }
-            .setPositiveButton("Apply") { _, _ ->
-                viewModel.setVisibleRoutes(allIds.filterIndexed { i, _ -> checked[i] }.toSet())
-            }
-            .setNeutralButton("Deselect All") { _, _ -> viewModel.setVisibleRoutes(emptySet()) }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        binding.map.onResume()
-    }
+    override fun onResume() { super.onResume(); binding.map.onResume() }
 
     override fun onPause() {
         super.onPause()
@@ -434,7 +458,7 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        binding.map.onSaveInstanceState(outState)
+        _binding?.map?.onSaveInstanceState(outState)
     }
 
     override fun onDestroyView() {
@@ -443,8 +467,30 @@ class RouteMapFragment : Fragment(), OnMapReadyCallback {
         _binding = null
     }
 
-    override fun onLowMemory() {
-        super.onLowMemory()
-        binding.map.onLowMemory()
+    override fun onLowMemory() { super.onLowMemory(); binding.map.onLowMemory() }
+}
+
+// ---------------------------------------------------------------------------
+// Spinner adapter — each route item rendered in its own route color
+// ---------------------------------------------------------------------------
+
+private class RouteSpinnerAdapter(context: Context, private val items: List<RouteItem>) :
+    ArrayAdapter<RouteItem>(context, android.R.layout.simple_spinner_item, items) {
+
+    init { setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item) }
+
+    override fun getView(pos: Int, convertView: View?, parent: ViewGroup): View =
+        style(super.getView(pos, convertView, parent), items[pos], bold = true)
+
+    override fun getDropDownView(pos: Int, convertView: View?, parent: ViewGroup): View =
+        style(super.getDropDownView(pos, convertView, parent), items[pos], bold = false)
+
+    private fun style(view: View, item: RouteItem, bold: Boolean): View {
+        view.findViewById<TextView>(android.R.id.text1)?.apply {
+            text = item.displayName
+            setTextColor(item.colorInt)
+            setTypeface(null, if (bold) Typeface.BOLD else Typeface.NORMAL)
+        }
+        return view
     }
 }
